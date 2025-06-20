@@ -1,0 +1,152 @@
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wake Up in Bikini Bottom with Friends</title>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/"
+        }
+    }
+    </script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="game-container">
+        <!-- Loading Screen -->
+        <div id="loading-screen" class="screen">
+            <div class="glitch-text" data-text="BIKINI BOTTOM">BIKINI BOTTOM</div>
+            <div class="loading-bar">
+                <div class="loading-progress"></div>
+            </div>
+            <div class="loading-text">CORRUPTING UNDERWATER REALITY...</div>
+        </div>
+
+        <!-- Main Menu -->
+        <div id="main-menu" class="screen hidden">
+            <div class="menu-title glitch-text" data-text="BIKINI BOTTOM">BIKINI BOTTOM</div>
+            <div class="menu-subtitle">WAKE UP WITH FRIENDS</div>
+            <div class="menu-buttons">
+                <button id="join-game" class="menu-btn">DIVE INTO CHAOS</button>
+                <button id="controls-btn" class="menu-btn">CONTROLS</button>
+            </div>
+            <div class="corruption-meter">
+                <div class="corruption-label">SYSTEM CORRUPTION</div>
+                <div class="corruption-bar">
+                    <div class="corruption-fill"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Game UI -->
+        <div id="game-ui" class="hidden">
+            <!-- HUD -->
+            <div id="hud">
+                <div class="hud-top">
+                    <div class="team-info">
+                        <div id="team-name">TEAM SPONGEBOB</div>
+                        <div id="team-score">FRAGMENTS: 0</div>
+                    </div>
+                    <div class="corruption-display">
+                        <div class="corruption-text">CORRUPTION</div>
+                        <div id="corruption-level">0%</div>
+                    </div>
+                    <div class="enemy-team-info">
+                        <div id="enemy-team-name">TEAM SQUIDWARD</div>
+                        <div id="enemy-team-score">FRAGMENTS: 0</div>
+                    </div>
+                </div>
+                
+                <div class="hud-bottom">
+                    <div class="weapon-info">
+                        <div id="weapon-name">JELLYFISH BLASTER</div>
+                        <div id="ammo-count">30/120</div>
+                    </div>
+                    <div class="health-info">
+                        <div id="health-bar">
+                            <div id="health-fill"></div>
+                        </div>
+                        <div id="health-text">100</div>
+                    </div>
+                </div>
+
+                <!-- Fragment Indicator -->
+                <div id="fragment-indicator" class="hidden">
+                    <div class="fragment-text">KRABBY PATTY SECRET ACQUIRED</div>
+                    <div class="fragment-arrow">↑</div>
+                </div>
+
+                <!-- Crosshair -->
+                <div id="crosshair">
+                    <div class="crosshair-dot"></div>
+                    <div class="crosshair-lines">
+                        <div class="crosshair-line top"></div>
+                        <div class="crosshair-line right"></div>
+                        <div class="crosshair-line bottom"></div>
+                        <div class="crosshair-line left"></div>
+                    </div>
+                </div>
+
+                <!-- Interaction Indicator -->
+                <div id="interaction-indicator" class="hidden">
+                    <div class="interaction-text">Press [F] to interact</div>
+                </div>
+                
+                <!-- Treasure Map Status -->
+                <div id="treasure-map-status" class="hidden">
+                    <div class="treasure-status">PLANKTON'S MAP STATUS</div>
+                </div>
+                
+                <!-- Remembrance Overlay -->
+                <div id="remembrance-overlay" class="hidden">
+                    <div class="remembrance-title">PATRICK'S MEMORY ACTIVATED</div>
+                    <div class="remembrance-subtitle">All jellyfish locations revealed!</div>
+                </div>
+            </div>
+
+            <!-- Console -->
+            <div id="console" class="hidden">
+                <div class="console-header">SANDY'S COMPUTER</div>
+                <div id="console-output"></div>
+                <div class="console-input-line">
+                    <span class="console-prompt">></span>
+                    <input type="text" id="console-input" autocomplete="off">
+                </div>
+            </div>
+
+            <!-- Kill Feed -->
+            <div id="kill-feed"></div>
+
+            <!-- Player List -->
+            <div id="player-list">
+                <div class="player-list-header">UNDERWATER FRIENDS</div>
+                <div id="player-list-content"></div>
+            </div>
+        </div>
+
+        <!-- Game Canvas -->
+        <canvas id="game-canvas"></canvas>
+
+        <!-- Mobile Controls -->
+        <div id="mobile-controls" class="hidden">
+            <div class="mobile-joystick" id="movement-joystick"></div>
+            <div class="mobile-buttons">
+                <button class="mobile-btn" id="shoot-btn">FIRE</button>
+                <button class="mobile-btn" id="jump-btn">JUMP</button>
+                <button class="mobile-btn" id="console-btn">~</button>
+            </div>
+        </div>
+
+        <!-- Game Over Screen -->
+        <div id="game-over" class="screen hidden">
+            <div class="game-over-title glitch-text" data-text="BIKINI BOTTOM SAVED">BIKINI BOTTOM SAVED</div>
+            <div id="game-over-details"></div>
+            <button id="play-again" class="menu-btn">RETURN TO THE DEPTHS</button>
+        </div>
+    </div>
+
+    <script src="game.js" type="module"></script>
+</body>
+</html>
