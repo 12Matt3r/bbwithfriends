@@ -940,27 +940,36 @@ body {
 }
 
 /* Kill Feed */
-#kill-feed {
+#kill-feed { /* This is the container */
     position: absolute;
-    top: 6rem;
-    right: 2rem;
-    width: 300px;
-    pointer-events: none;
+    top: 1rem; /* Adjusted from 6rem to be higher */
+    right: 1rem; /* Adjusted for consistency */
+    width: 280px; /* Slightly narrower */
+    max-height: 150px; /* Limit height, allow scroll or fade */
+    overflow: hidden; /* Hide messages that overflow if not scrolling */
+    display: flex;
+    flex-direction: column-reverse; /* New messages appear at bottom and push old ones up */
+    pointer-events: none; /* Container itself isn't interactive */
 }
 
-.kill-entry {
-    background: rgba(0, 0, 0, 0.7);
-    border: 1px solid #333;
-    padding: 0.5rem;
-    margin-bottom: 0.25rem;
-    font-size: 0.8rem;
-    animation: slideIn 0.3s ease;
+.kill-feed-message {
+    background-color: rgba(10, 0, 20, 0.6); /* Darker, slightly purple background */
+    color: #e0e0e0; /* Light grey text */
+    padding: 6px 10px;
+    margin-top: 4px; /* Use margin-top since flex-direction is column-reverse */
+    border-radius: 3px;
+    font-size: 0.75rem; /* Slightly smaller */
+    border-left: 3px solid var(--secondary-color); /* Accent border */
+    opacity: 1;
+    transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+    transform: translateX(0);
 }
 
-@keyframes slideIn {
-    from { transform: translateX(100%); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
+.kill-feed-message.fade-out {
+    opacity: 0;
+    transform: translateX(20px); /* Slide out to the right */
 }
+/* Removed old .kill-entry and @keyframes slideIn as new system is different */
 
 /* Player List */
 #player-list {

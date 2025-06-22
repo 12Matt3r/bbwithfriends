@@ -15,6 +15,10 @@ export class UIManager {
         this.chaosInfluencerDisplay = document.getElementById('chaos-influencer-display');
         this.chaosInfluencerName = document.getElementById('chaos-influencer-name');
 
+        // Corruption and Kill Feed
+        this.corruptionDisplay = document.getElementById('corruption-level'); // Target the element showing the percentage
+        this.killFeedContainer = document.getElementById('kill-feed');
+
 
         this.setupEventListeners();
         this.setupWeaponSelection();
@@ -348,17 +352,48 @@ export class UIManager {
         document.getElementById('ammo-count').textContent = `${this.gameCore.player.ammo}/${this.gameCore.player.maxAmmo}`;
     }
     
-    updateCorruptionDisplay() {
-        const corruptionLevel = document.getElementById('corruption-level');
-        const corruptionFill = document.querySelector('.corruption-fill');
-        
-        if (corruptionLevel) {
-            corruptionLevel.textContent = `${Math.floor(this.gameCore.gameState.corruptionLevel)}%`;
+    updateCorruptionDisplay() { // Parameter 'level' is not used, uses gameCore.gameState
+        const corruptionLevelValue = Math.floor(this.gameCore.gameState.corruptionLevel);
+        if (this.corruptionDisplay) { // This is #corruption-level
+            this.corruptionDisplay.textContent = `${corruptionLevelValue}%`;
         }
         
+        const corruptionFill = document.querySelector('.corruption-fill'); // This is for the main menu bar
         if (corruptionFill) {
-            corruptionFill.style.width = `${this.gameCore.gameState.corruptionLevel}%`;
+            corruptionFill.style.width = `${corruptionLevelValue}%`;
         }
+        // If a separate in-game UI bar for corruption needs update, add here.
+    }
+
+    // Modified addKillFeedEntry from previous version to match current plan
+    addKillFeedEntry(killerName, victimName, weaponUsed) {
+        if (!this.killFeedContainer) return;
+
+        const messageEl = document.createElement('div');
+        messageEl.classList.add('kill-feed-message');
+
+        let message = `${killerName} eliminated ${victimName}`;
+        if (weaponUsed && weaponUsed !== 'Unknown') {
+            message += ` (with ${weaponUsed})`;
+        }
+        messageEl.textContent = message;
+
+        // Prepend to have new messages at the top if flex-direction: column (or bottom if column-reverse)
+        this.killFeedContainer.insertBefore(messageEl, this.killFeedContainer.firstChild);
+
+        const MAX_KILL_FEED_MESSAGES = 5;
+        if (this.killFeedContainer.children.length > MAX_KILL_FEED_MESSAGES) {
+            this.killFeedContainer.removeChild(this.killFeedContainer.lastChild);
+        }
+
+        setTimeout(() => {
+            messageEl.classList.add('fade-out');
+            setTimeout(() => {
+                if (messageEl.parentNode) {
+                    messageEl.remove();
+                }
+            }, 500); // CSS transition time
+        }, 5000); // Message visible time
     }
     
     showFragmentIndicator() {
@@ -394,11 +429,10 @@ export class UIManager {
         }
     }
 
-    updateLobbyPlayerList(players) { // This is for the LOBBY player list
+    updateLobbyPlayerList(playersData) { // Renamed arg from players to playersData for consistency
         if (!this.lobbyPlayerList) return;
         this.lobbyPlayerList.innerHTML = ''; // Clear existing list
 
-        // The argument was 'players' but used as 'playersData'. Correcting to 'playersData'.
         if (!playersData || playersData.length === 0) {
             const emptyItem = document.createElement('li');
             emptyItem.textContent = 'Waiting for players...';
@@ -533,25 +567,8 @@ export class UIManager {
         }
     }
     
-    addKillFeedEntry(text) {
-        const killFeed = document.getElementById('kill-feed');
-        const entry = document.createElement('div');
-        entry.className = 'kill-entry';
-        entry.textContent = text;
-        
-        killFeed.appendChild(entry);
-        
-        setTimeout(() => {
-            if (entry.parentNode) {
-                entry.parentNode.removeChild(entry);
-            }
-        }, 5000);
-        
-        while (killFeed.children.length > 5) {
-            killFeed.removeChild(killFeed.firstChild);
-        }
-    }
-    
+    // Old addKillFeedEntry(text) is replaced by the new one above.
+
     showControls() {
         alert(`CONTROLS:
         

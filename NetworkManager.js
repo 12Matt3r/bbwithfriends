@@ -82,6 +82,17 @@ export class NetworkManager {
         }
     }
 
+    sendPlayerEliminated(victimName, killerName, weaponUsed) {
+        if (this.room) {
+            this.send({
+                type: 'player_eliminated',
+                victimName: victimName,
+                killerName: killerName,
+                weaponUsed: weaponUsed
+            });
+        }
+    }
+
     sendChaosInfluencerDetermined(influencerId) {
         if (this.room) {
             this.send({
