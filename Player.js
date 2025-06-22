@@ -13,6 +13,7 @@ export class Player {
         this.team = 'alpha';
         this.gameCore = null;
         this.playerClass = 'assault';
+        this.lastDamageInfo = null;
 
         // State properties
         // this.isCrouching = false; // Already present from previous version of plan
@@ -60,7 +61,33 @@ export class Player {
         // Weapon model
         this.weaponModel = null;
 
+        // Gravity properties
+        this.normalGravityY = -20; // Default standard Y gravity (adjust as per game feel)
+        this.currentGravityY = this.normalGravityY;
+        this.gravityGlitchTimer = 0; // in milliseconds
+        this.isGravityGlitched = false;
+
+        this.currentBoothId = null; // For Confessional Booths
+        this.isSpeaking = false; // For Voice Chat Indicator
+
+        // Match Stats related properties
+        this.totalTimeHoldingFragment = 0;
+        this.currentFragmentSessionStartTime = 0; // Using game time (seconds)
+
         this.setClass(this.playerClass); // Initialize health and weapon based on default class
+    }
+
+    toggleSpeaking() {
+        this.isSpeaking = !this.isSpeaking;
+        if (this.gameCore && this.gameCore.networkManager) {
+            this.gameCore.networkManager.updatePresence(this.getPresenceData());
+        }
+        // Optional: Local feedback for speaking state can be handled here or in GameCore/EffectsManager
+        // if (this.gameCore && this.gameCore.effectsManager && typeof this.gameCore.effectsManager.setPlayerSpeakingIndicator === 'function') {
+        //     // This would need playerMesh reference, which Player.js doesn't typically hold directly.
+        //     // GameCore.updatePlayerModel is a better place for remote players.
+        //     // For local player, GameCore could call this if needed.
+        // }
     }
 
     getWeaponForClass(playerClass) {
@@ -220,7 +247,19 @@ export class Player {
         }
         
         // Apply gravity
-        this.velocity.y -= 20 * deltaTime;
+        if (this.isGravityGlitched) {
+            this.gravityGlitchTimer -= deltaTime * 1000; // deltaTime is in seconds
+            if (this.gravityGlitchTimer <= 0) {
+                this.currentGravityY = this.normalGravityY;
+                this.isGravityGlitched = false;
+                this.gravityGlitchTimer = 0;
+                if (this.gameCore && this.gameCore.uiManager) {
+                    this.gameCore.uiManager.addConsoleLogMessage("Gravity returns to normal.", "info");
+                }
+            }
+        }
+        this.velocity.y += this.currentGravityY * deltaTime; // Use currentGravityY
+
         this.position.y += this.velocity.y * deltaTime;
         
         // Ground collision using environment
@@ -262,6 +301,25 @@ export class Player {
             } else {
                 this.canCollectFragment = false;
                 this.currentTouchingFragmentId = null;
+            }
+        }
+
+        // Check for Confessional Booth interaction
+        if (this.gameCore && this.gameCore.confessionalBoothZones && this.gameCore.uiManager) {
+            let inBooth = false;
+            for (const booth of this.gameCore.confessionalBoothZones) {
+                if (this.position.distanceTo(booth.center) <= booth.radius) {
+                    if (this.currentBoothId !== booth.id) {
+                        this.currentBoothId = booth.id;
+                        this.gameCore.uiManager.showConfessionalPrompt(this.currentBoothId);
+                    }
+                    inBooth = true;
+                    break;
+                }
+            }
+            if (!inBooth && this.currentBoothId !== null) {
+                this.currentBoothId = null;
+                this.gameCore.uiManager.hideConfessionalPrompt();
             }
         }
     }
@@ -361,6 +419,9 @@ export class Player {
             this.carryingFragmentId = fragmentIdToCollect;
             this.canCollectFragment = false; // No longer able to pick up another one
             this.currentTouchingFragmentId = null;
+            if (this.gameCore && this.gameCore.gameState) { // Check if gameCore and gameState are available
+                this.currentFragmentSessionStartTime = this.gameCore.gameState.gameTime; // Start timer
+            }
 
             // FragmentManager's collectFragment method should call updateFragmentOnNetwork.
             // UI update for fragment indicator can be triggered from GameCore or UIManager observing player.hasFragment
@@ -392,6 +453,11 @@ export class Player {
         // Tell FragmentManager to re-spawn/unhide the fragment at this position
         if (this.gameCore.fragmentManager.dropFragment(this.carryingFragmentId, dropPosition)) {
             const oldFragmentId = this.carryingFragmentId;
+            if (this.currentFragmentSessionStartTime > 0 && this.gameCore && this.gameCore.gameState) {
+                const holdDuration = this.gameCore.gameState.gameTime - this.currentFragmentSessionStartTime;
+                this.totalTimeHoldingFragment += holdDuration;
+                this.currentFragmentSessionStartTime = 0;
+            }
             this.hasFragment = false;
             this.carryingFragmentId = null;
             this.fragmentHoldTime = 0; // Reset hold time
@@ -422,7 +488,8 @@ export class Player {
             carryingFragmentId: this.carryingFragmentId,
             isCrouching: this.isCrouching,
             isSprinting: this.isSprinting,
-            isReloading: this.isReloading
+            isReloading: this.isReloading,
+            isSpeaking: this.isSpeaking // Added for voice chat
         };
     }
 
@@ -521,6 +588,7 @@ export class Player {
     takeDamage(amount, weaponType = 'unknown', attackerId = null) { // Added weaponType and attackerId
         if (this.isDead) return false;
 
+        this.lastDamageInfo = { attackerId: attackerId, weapon: weaponType };
         this.health = Math.max(0, this.health - amount);
 
         if (this.gameCore && this.gameCore.effectsManager) { // Damage screen flash
@@ -583,5 +651,35 @@ export class Player {
 
     heal(amount) {
         this.health = Math.min(this.maxHealth, this.health + amount);
+    }
+
+    applyGravityGlitch(newGravityObj, durationSeconds) {
+        if (typeof newGravityObj.y === 'number') {
+            this.currentGravityY = newGravityObj.y;
+            this.gravityGlitchTimer = durationSeconds * 1000; // Convert to ms
+            this.isGravityGlitched = true;
+            if (this.gameCore && this.gameCore.uiManager) {
+                this.gameCore.uiManager.addConsoleLogMessage(`Gravity changed to Y=${this.currentGravityY} for ${durationSeconds}s!`, "warning");
+            }
+        } else {
+            console.error("applyGravityGlitch: newGravityObj.y is not a number.", newGravityObj);
+            if (this.gameCore && this.gameCore.uiManager) {
+                this.gameCore.uiManager.addConsoleLogMessage("Failed to apply gravity glitch: invalid gravity value.", "error");
+            }
+        }
+    }
+
+    getMatchStats() {
+        // Ensure ongoing session is accounted for if player is still holding at match end
+        let currentSessionDuration = 0;
+        if (this.hasFragment && this.currentFragmentSessionStartTime > 0 && this.gameCore && this.gameCore.gameState) {
+            currentSessionDuration = this.gameCore.gameState.gameTime - this.currentFragmentSessionStartTime;
+        }
+
+        return {
+            playerId: this.getPlayerId(),
+            username: (this.gameCore?.networkManager?.getUsername(this.getPlayerId())) || this.getPlayerId().substring(0,6), // Get current username
+            totalTimeHoldingFragment: this.totalTimeHoldingFragment + currentSessionDuration
+        };
     }
 }

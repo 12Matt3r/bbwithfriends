@@ -80,7 +80,7 @@ export class FragmentManager {
         const existingPingAccumulator = this.fragmentStates[id].pingAccumulator;
         const existingContinuousHoldTime = this.fragmentStates[id].continuousHoldTime;
 
-        Object.assign(this.fragmentStates[id], newState);
+        // Object.assign(this.fragmentStates[id], newState); // REMOVE THIS DUPLICATE
 
         if (newState.pingAccumulator === undefined) {
             this.fragmentStates[id].pingAccumulator = existingPingAccumulator;
@@ -89,8 +89,22 @@ export class FragmentManager {
             this.fragmentStates[id].continuousHoldTime = existingContinuousHoldTime;
         }
         
-        const state = this.fragmentStates[id];
+        const oldState = { ...this.fragmentStates[id] }; // Shallow copy for before/after comparison
+        Object.assign(this.fragmentStates[id], newState);
+        const state = this.fragmentStates[id]; // This is the new, updated state
         const mesh = this.fragmentMeshes[id];
+
+        // Streamer event logging for collection/drop
+        if (this.gameCore && this.gameCore.streamerDataManager) {
+            if (!oldState.isCollected && state.isCollected && state.carrierId) {
+                const playerName = this.gameCore.getPlayerName ? this.gameCore.getPlayerName(state.carrierId) : state.carrierId;
+                this.gameCore.streamerDataManager.addStreamerEvent(`Fragment ${id} collected by ${playerName}!`);
+                if (this.gameCore.matchStatsManager) this.gameCore.matchStatsManager.addTimelineEvent(`Fragment ${id} collected by ${playerName}!`, "fragment_collect");
+            } else if (oldState.isCollected && !state.isCollected) {
+                this.gameCore.streamerDataManager.addStreamerEvent(`Fragment ${id} dropped!`);
+                if (this.gameCore.matchStatsManager) this.gameCore.matchStatsManager.addTimelineEvent(`Fragment ${id} dropped by ${oldState.carrierId ? (this.gameCore.getPlayerName ? this.gameCore.getPlayerName(oldState.carrierId) : oldState.carrierId) : 'unknown'}!`, "fragment_drop");
+            }
+        }
 
         if (state.isCollected) {
             if (mesh) mesh.visible = false;
@@ -110,10 +124,19 @@ export class FragmentManager {
                     mesh.visible = true;
                 }
             } else if (mesh) { // No position but should be visible (e.g. initial state)
-                 mesh.visible = true; // May need a default position if state.position is null
+                 mesh.visible = true;
+            }
+            // If fragment was just dropped or spawned (isCollected is false and has a position)
+            if (id === 'center_fragment' && !state.isCollected && state.position && this.gameCore.effectsManager) {
+                this.gameCore.effectsManager.startTerrainCorruption(id, state.position, this.gameCore.gameSettings?.fragmentCorruptionRadius || 7);
             }
         }
         this.updateFragmentOnNetwork(id);
+
+        // Effects for pickup
+        if (id === 'center_fragment' && newState.isCollected === true && this.gameCore.effectsManager) {
+            this.gameCore.effectsManager.stopTerrainCorruption(id);
+        }
     }
     
     updateFragmentOnNetwork(id) {

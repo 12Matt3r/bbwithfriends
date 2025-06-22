@@ -16,22 +16,60 @@ export class UIManager {
         this.chaosInfluencerName = document.getElementById('chaos-influencer-name');
 
         // Corruption and Kill Feed
-        this.corruptionDisplay = document.getElementById('corruption-level'); // Target the element showing the percentage
-        this.killFeedContainer = document.getElementById('kill-feed');
+        this.corruptionDisplay = document.getElementById('corruption-level'); // This is the element for the text "0%"
+        this.killFeedContainer = document.getElementById('kill-feed-container'); // Corrected ID
+
+        // Console Elements
+        this.consoleContainer = document.getElementById('console'); // Using existing ID
+        this.consoleLog = document.getElementById('console-output');   // Using existing ID
+        this.consoleInput = document.getElementById('console-input');   // Using existing ID
+        this.isConsoleOpen = false;
+
+        // Map Reveal Elements & State
+        this.mapRevealOverlay = document.getElementById('map-reveal-overlay');
+        this.mapRevealPlayerIconsContainer = document.getElementById('map-reveal-player-icons');
+        this.mapRevealTimerDisplay = document.getElementById('map-reveal-timer');
+        this.mapRevealActive = false;
+        this.mapRevealInterval = null;
+        this.mapRevealEndTime = 0;
+        // Define map bounds (minX, maxX, minZ, maxZ) for your game world.
+        // EXAMPLE VALUES - ADJUST TO YOUR ACTUAL MAP DIMENSIONS!
+        this.mapWorldBounds = { minX: -60, maxX: 60, minZ: -60, maxZ: 60 };
+
+        // Confessional Booth Elements & State
+        this.confessionalPrompt = document.getElementById('confessional-prompt');
+        this.confessionalInputOverlay = document.getElementById('confessional-input-overlay');
+        this.confessionalTextInput = document.getElementById('confessional-text-input');
+        this.submitConfessionalButton = document.getElementById('submit-confessional-button');
+        this.cancelConfessionalButton = document.getElementById('cancel-confessional-button');
+        this.currentBoothIdForConfessional = null; // To store which booth triggered the input
+        this.isConfessionalInputActive = false; // To track if the input overlay is shown
+
+        // Match Summary Screen Elements
+        this.matchSummaryScreen = document.getElementById('match-summary-screen');
+        this.summaryLongestHolder = document.getElementById('summary-longest-holder');
+        this.summaryMostCommands = document.getElementById('summary-most-commands');
+        this.summaryConfessionalList = document.getElementById('summary-confessional-list');
+        this.summaryTimelineLog = document.getElementById('summary-timeline-log');
+        this.copyTimelineButton = document.getElementById('copy-timeline-button');
+        this.summaryScreenshotContainer = document.getElementById('summary-screenshot-container');
+        this.summaryScreenshotImg = document.getElementById('summary-screenshot-img');
+        this.downloadScreenshotLink = document.getElementById('download-screenshot-link');
+        this.closeSummaryButton = document.getElementById('close-summary-button');
 
 
         this.setupEventListeners();
         this.setupWeaponSelection();
+        this.setupConsoleInputListener();
+        this.setupConfessionalEventListeners();
+        this.setupMatchSummaryEventListeners();
     }
     
     setupEventListeners() {
         // Main Menu
         document.getElementById('join-game').addEventListener('click', () => {
-            // This will likely transition to the lobby first, then start game
-            // For now, let's assume it shows the lobby
-            this.hideMainMenu();
-            this.showLobbyScreen();
-            // this.gameCore.startGame(); // Original line, might be handled by LobbyManager later
+            // Transition to lobby is handled by GameCore
+            this.gameCore.transitionToLobby();
         });
         
         document.getElementById('controls-btn').addEventListener('click', () => {
@@ -111,6 +149,143 @@ export class UIManager {
                 }
             });
         });
+    }
+
+    setupConfessionalEventListeners() {
+        if (this.submitConfessionalButton) {
+            this.submitConfessionalButton.addEventListener('click', () => {
+                const quoteText = this.confessionalTextInput.value.trim();
+                if (quoteText && this.currentBoothIdForConfessional) {
+                    if (this.gameCore && typeof this.gameCore.recordConfessional === 'function') {
+                        this.gameCore.recordConfessional(quoteText, this.currentBoothIdForConfessional);
+                    }
+                }
+                this.hideConfessionalInput();
+            });
+        }
+
+        if (this.cancelConfessionalButton) {
+            this.cancelConfessionalButton.addEventListener('click', () => {
+                this.hideConfessionalInput();
+            });
+        }
+
+        // Optional: Allow Escape to also cancel the confessional input
+        if (this.confessionalTextInput) {
+            this.confessionalTextInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && this.isConfessionalInputActive) { // Check if input is active
+                    this.hideConfessionalInput();
+                }
+            });
+        }
+    }
+
+    showConfessionalPrompt(boothId) {
+        if (this.confessionalPrompt) {
+            this.confessionalPrompt.style.display = 'block';
+            this.currentBoothIdForConfessional = boothId; // Store the booth ID
+        }
+    }
+
+    hideConfessionalPrompt() {
+        if (this.confessionalPrompt) {
+            this.confessionalPrompt.style.display = 'none';
+            // Don't nullify currentBoothIdForConfessional here,
+            // InputManager might need it briefly after prompt is hidden and before input is shown.
+        }
+    }
+
+    isConfessionalInputVisible() { // Renamed from isConfessionalInputActive for clarity of function
+        return this.isConfessionalInputActive;
+    }
+
+    showConfessionalInput() {
+        if (this.confessionalInputOverlay && this.confessionalTextInput) {
+            this.hideConfessionalPrompt(); // Hide prompt when input overlay is shown
+            this.confessionalInputOverlay.style.display = 'flex';
+            this.isConfessionalInputActive = true;
+            this.confessionalTextInput.value = '';
+            this.confessionalTextInput.focus();
+            if (this.gameCore.inputManager) {
+                this.gameCore.inputManager.setFocus(false); // Disable game input
+            }
+            if (this.gameCore.enablePointerLock) this.gameCore.enablePointerLock(false);
+        }
+    }
+
+    hideConfessionalInput() {
+        if (this.confessionalInputOverlay) {
+            this.confessionalInputOverlay.style.display = 'none';
+            this.isConfessionalInputActive = false;
+            if (this.gameCore.inputManager) {
+                this.gameCore.inputManager.setFocus(true); // Re-enable game input
+            }
+            // Re-acquire pointer lock only if game is active
+            if (this.gameCore.enablePointerLock && this.gameCore.gameState && this.gameCore.gameState.isGameStarted) {
+                this.gameCore.enablePointerLock(true);
+            }
+            // If player is still in a booth zone, Player.js logic will call showConfessionalPrompt again.
+            // No need to explicitly re-show it here, to avoid race conditions.
+            this.currentBoothIdForConfessional = null; // Clear stored booth ID once input is done
+        }
+    }
+
+    setupConsoleInputListener() {
+        if (this.consoleInput) {
+            this.consoleInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && this.isConsoleOpen) {
+                    event.preventDefault();
+                    const commandText = this.consoleInput.value.trim();
+                    if (commandText) {
+                        this.addConsoleLogMessage(commandText, 'user'); // Log user's typed command
+                        if (this.gameCore.consoleManager) {
+                            this.gameCore.consoleManager.processCommand(commandText);
+                        }
+                    }
+                    this.consoleInput.value = ''; // Clear input
+                } else if (event.key === 'Escape' && this.isConsoleOpen) {
+                    event.preventDefault();
+                    this.toggleConsole();
+                }
+            });
+        }
+    }
+
+    toggleConsole() {
+        this.isConsoleOpen = !this.isConsoleOpen;
+        if (this.consoleContainer) {
+            this.consoleContainer.classList.toggle('hidden', !this.isConsoleOpen);
+        }
+
+        if (this.isConsoleOpen) {
+            if (this.consoleInput) this.consoleInput.focus();
+            if (this.gameCore.inputManager) this.gameCore.inputManager.setFocus(false); // Game loses focus
+            if (this.gameCore.enablePointerLock) this.gameCore.enablePointerLock(false); // Release pointer lock
+        } else {
+            if (this.consoleInput) this.consoleInput.blur();
+            if (this.gameCore.inputManager) this.gameCore.inputManager.setFocus(true);  // Game gains focus
+            // Re-acquire pointer lock only if game is active and was previously locked
+            if (this.gameCore.enablePointerLock && this.gameCore.gameState && this.gameCore.gameState.isGameStarted) {
+                 this.gameCore.enablePointerLock(true);
+            }
+        }
+    }
+
+    isConsoleVisible() {
+        return this.isConsoleOpen;
+    }
+
+    addConsoleLogMessage(message, type = 'info') { // type can be 'info', 'error', 'response', 'user'
+        if (!this.consoleLog) return;
+        const messageDiv = document.createElement('div');
+        messageDiv.className = type;
+
+        // Add a prompt only if it's not a user-typed message already logged
+        const prompt = (type !== 'user') ? '> ' : '';
+        messageDiv.textContent = `${prompt}${message}`;
+
+        this.consoleLog.appendChild(messageDiv);
+        this.consoleLog.scrollTop = this.consoleLog.scrollHeight; // Auto-scroll to bottom
     }
 
     disableAllVoteButtons() {
@@ -352,48 +527,62 @@ export class UIManager {
         document.getElementById('ammo-count').textContent = `${this.gameCore.player.ammo}/${this.gameCore.player.maxAmmo}`;
     }
     
-    updateCorruptionDisplay() { // Parameter 'level' is not used, uses gameCore.gameState
-        const corruptionLevelValue = Math.floor(this.gameCore.gameState.corruptionLevel);
+    updateCorruptionDisplay() {
+        const corruptionLevelValue = Math.round(this.gameCore.gameState.corruptionLevel); // Use Math.round for cleaner display
         if (this.corruptionDisplay) { // This is #corruption-level
             this.corruptionDisplay.textContent = `${corruptionLevelValue}%`;
         }
         
-        const corruptionFill = document.querySelector('.corruption-fill'); // This is for the main menu bar
-        if (corruptionFill) {
-            corruptionFill.style.width = `${corruptionLevelValue}%`;
+        // This is for the main menu corruption bar, separate from in-game HUD
+        const mainMenuCorruptionFill = document.querySelector('#main-menu .corruption-fill');
+        if (mainMenuCorruptionFill) {
+            mainMenuCorruptionFill.style.width = `${corruptionLevelValue}%`;
         }
-        // If a separate in-game UI bar for corruption needs update, add here.
+        // If there's an in-game HUD bar for corruption (not just text), update it here.
     }
 
-    // Modified addKillFeedEntry from previous version to match current plan
     addKillFeedEntry(killerName, victimName, weaponUsed) {
-        if (!this.killFeedContainer) return;
+        if (!this.killFeedContainer) {
+            console.warn("killFeedContainer not found in UIManager");
+            return;
+        }
 
         const messageEl = document.createElement('div');
         messageEl.classList.add('kill-feed-message');
 
-        let message = `${killerName} eliminated ${victimName}`;
-        if (weaponUsed && weaponUsed !== 'Unknown') {
-            message += ` (with ${weaponUsed})`;
-        }
-        messageEl.textContent = message;
+        // Sanitize inputs to prevent HTML injection if names ever come from user input directly
+        const saneKiller = this.escapeHTML(killerName || "Unknown");
+        const saneVictim = this.escapeHTML(victimName || "Unknown");
+        const saneWeapon = this.escapeHTML(weaponUsed || "Claws"); // Default to "Claws" or similar
 
-        // Prepend to have new messages at the top if flex-direction: column (or bottom if column-reverse)
-        this.killFeedContainer.insertBefore(messageEl, this.killFeedContainer.firstChild);
+        messageEl.innerHTML = `${saneKiller} <span style="color:var(--enemy-color);">[${saneWeapon}]</span> ${saneVictim}`;
 
-        const MAX_KILL_FEED_MESSAGES = 5;
+        // Add to top, and let flex-direction: column handle order.
+        this.killFeedContainer.appendChild(messageEl);
+
+        const MAX_KILL_FEED_MESSAGES = this.MAX_KILL_FEED_MESSAGES || 5;
+        // If using flex-direction: column-reverse, new items are added at end but appear at top.
+        // If using flex-direction: column, new items are added at end and appear at bottom.
+        // For messages to appear at top and push old ones down (then overflow hidden),
+        // we should use appendChild and then if > MAX, removeChild(firstChild).
+        // The CSS uses column-reverse, so appendChild works as "prepend" visually.
+
         if (this.killFeedContainer.children.length > MAX_KILL_FEED_MESSAGES) {
-            this.killFeedContainer.removeChild(this.killFeedContainer.lastChild);
+            // If column-reverse, firstChild is visually the bottom one (oldest if new are appended)
+            // If column (standard), firstChild is visually the top one.
+            // With column-reverse, new items via appendChild go to the "bottom" which is visually the "top".
+            // So to remove the oldest (visually bottom), we remove this.killFeedContainer.firstChild
+            this.killFeedContainer.removeChild(this.killFeedContainer.firstChild);
         }
 
         setTimeout(() => {
             messageEl.classList.add('fade-out');
             setTimeout(() => {
-                if (messageEl.parentNode) {
-                    messageEl.remove();
+                if (messageEl.parentNode === this.killFeedContainer) { // Check parent before removing
+                     this.killFeedContainer.removeChild(messageEl);
                 }
-            }, 500); // CSS transition time
-        }, 5000); // Message visible time
+            }, 500); // Match CSS transition time (0.5s)
+        }, 7000); // Message visible for 7 seconds
     }
     
     showFragmentIndicator() {
@@ -762,5 +951,313 @@ WARNING: Using Sandy's computer increases corruption levels in Bikini Bottom.`);
                 notificationElement.remove();
             }
         }, 3000); // Display for 3 seconds
+    }
+
+    // --- Map Reveal Methods ---
+    _worldToMapPercent(worldPos, bounds) {
+        const xPercent = ((worldPos.x - bounds.minX) / (bounds.maxX - bounds.minX)) * 100;
+        const zPercent = ((worldPos.z - bounds.minZ) / (bounds.maxZ - bounds.minZ)) * 100; // Assuming Z is the other horizontal axis
+        return { x: Math.max(0, Math.min(100, xPercent)), z: Math.max(0, Math.min(100, zPercent)) };
+    }
+
+    showMapReveal(durationSeconds) {
+        if (this.mapRevealActive || !this.mapRevealOverlay || !this.mapRevealPlayerIconsContainer || !this.mapRevealTimerDisplay) {
+            return;
+        }
+        this.mapRevealActive = true;
+        this.mapRevealOverlay.style.display = 'block';
+        this.mapRevealEndTime = Date.now() + durationSeconds * 1000;
+
+        if (this.mapRevealInterval) {
+            clearInterval(this.mapRevealInterval);
+        }
+        this.mapRevealInterval = setInterval(() => { this.updateMapRevealPlayerIcons(); }, 200); // Update icons 5 times/sec
+        this.updateMapRevealPlayerIcons(); // Initial update
+
+        if (this.gameCore.audioManager) {
+            this.gameCore.audioManager.playSound('reveal_map_start_sound'); // Ensure this sound key exists
+        }
+    }
+
+    updateMapRevealPlayerIcons() {
+        if (!this.mapRevealActive || !this.gameCore || !this.mapRevealPlayerIconsContainer || !this.mapRevealTimerDisplay) {
+            this.hideMapReveal(); // Ensure cleanup if something is wrong
+            return;
+        }
+
+        const timeLeft = Math.max(0, Math.ceil((this.mapRevealEndTime - Date.now()) / 1000));
+        this.mapRevealTimerDisplay.textContent = `${timeLeft}s`;
+
+        if (timeLeft <= 0) {
+            this.hideMapReveal();
+            return;
+        }
+
+        this.mapRevealPlayerIconsContainer.innerHTML = ''; // Clear old icons
+
+        // Local Player
+        if (this.gameCore.player) {
+            const localPos = this.gameCore.player.position;
+            const localMapPos = this._worldToMapPercent(localPos, this.mapWorldBounds);
+            const localIcon = document.createElement('div');
+            localIcon.className = 'player-map-icon local-player-map-icon';
+            localIcon.style.left = localMapPos.x + '%';
+            localIcon.style.top = localMapPos.z + '%';
+            localIcon.title = this.gameCore.player.username || 'You';
+            this.mapRevealPlayerIconsContainer.appendChild(localIcon);
+        }
+
+        // Remote Players
+        if (this.gameCore.otherPlayers && this.gameCore.networkManager) {
+            const localPlayerTeam = this.gameCore.player ? this.gameCore.player.team : null;
+
+            this.gameCore.otherPlayers.forEach((remotePlayer, playerId) => {
+                // remotePlayer.mesh.position is the source of truth for remote player visuals
+                if (remotePlayer.mesh && remotePlayer.mesh.visible) {
+                    const remotePos = remotePlayer.mesh.position;
+                    const remoteMapPos = this._worldToMapPercent(remotePos, this.mapWorldBounds);
+                    const remoteIcon = document.createElement('div');
+
+                    // Determine if teammate or enemy based on presence data
+                    const remotePlayerData = this.gameCore.networkManager.room?.presence[playerId];
+                    let iconClass = 'player-map-icon enemy-map-icon'; // Default to enemy
+                    if (remotePlayerData && localPlayerTeam && remotePlayerData.team === localPlayerTeam) {
+                        iconClass = 'player-map-icon teammate-map-icon';
+                    }
+
+                    remoteIcon.className = iconClass;
+                    remoteIcon.style.left = remoteMapPos.x + '%';
+                    remoteIcon.style.top = remoteMapPos.z + '%';
+                    remoteIcon.title = (remotePlayerData?.username) || `Player ${playerId.substring(0,4)}`;
+                    this.mapRevealPlayerIconsContainer.appendChild(remoteIcon);
+                }
+            });
+        }
+    }
+
+    hideMapReveal() {
+        if (!this.mapRevealActive && this.mapRevealOverlay && this.mapRevealOverlay.style.display === 'none') return; // Already hidden or never shown
+
+        this.mapRevealActive = false;
+        if (this.mapRevealOverlay) {
+            this.mapRevealOverlay.style.display = 'none';
+        }
+        if (this.mapRevealInterval) {
+            clearInterval(this.mapRevealInterval);
+            this.mapRevealInterval = null;
+        }
+        if (this.mapRevealPlayerIconsContainer) {
+            this.mapRevealPlayerIconsContainer.innerHTML = '';
+        }
+        if (this.gameCore.audioManager) {
+            this.gameCore.audioManager.playSound('reveal_map_end_sound'); // Ensure this sound key exists
+        }
+    }
+
+    setMeltPhaseVisuals(isActive) {
+        const hudElement = document.getElementById('hud');
+        const crosshairElement = document.getElementById('crosshair');
+        // Score display elements
+        const teamScoreElement = document.getElementById('team-score');
+        const enemyScoreElement = document.getElementById('enemy-team-score');
+        const corruptionDisplayElement = this.corruptionDisplay; // Already a class property
+        const gameUiElement = document.getElementById('game-ui');
+
+
+        if (isActive) {
+            if (hudElement) hudElement.style.display = 'none';
+            if (crosshairElement) crosshairElement.style.display = 'none';
+            // Hiding individual score elements - consider a parent container for HUD for easier toggle
+            if (teamScoreElement && teamScoreElement.parentElement && teamScoreElement.parentElement.classList.contains('team-info')) { // Hide parent if it's specific enough
+                 // teamScoreElement.parentElement.style.display = 'none'; // This might hide team name too
+            } else if (teamScoreElement) {
+                 teamScoreElement.style.display = 'none';
+            }
+            if (enemyScoreElement && enemyScoreElement.parentElement && enemyScoreElement.parentElement.classList.contains('enemy-team-info')) {
+                // enemyScoreElement.parentElement.style.display = 'none';
+            } else if (enemyScoreElement) {
+                enemyScoreElement.style.display = 'none';
+            }
+             if (corruptionDisplayElement && corruptionDisplayElement.parentElement && corruptionDisplayElement.parentElement.classList.contains('corruption-display')) {
+                corruptionDisplayElement.parentElement.style.display = 'none';
+            } else if (corruptionDisplayElement) {
+                 corruptionDisplayElement.style.display = 'none';
+            }
+
+            // Hide other specific UI elements
+            const fragmentIndicatorElement = document.getElementById('fragment-indicator');
+            if (fragmentIndicatorElement) fragmentIndicatorElement.style.display = 'none';
+
+            const interactionPromptElement = document.getElementById('interaction-prompt');
+            if (interactionPromptElement) interactionPromptElement.style.display = 'none';
+
+            const playerListElement = document.getElementById('player-list');
+            if (playerListElement) playerListElement.style.display = 'none';
+
+            if (this.isConsoleOpen) {
+                this.toggleConsole(); // Close console if open
+            }
+            if (this.mapRevealActive) {
+                this.hideMapReveal(); // Hide map if it's active
+            }
+            if (this.isConfessionalInputVisible()) {
+                this.hideConfessionalInput(); // Hide confessional input if active
+            }
+            if (this.confessionalPrompt && this.confessionalPrompt.style.display === 'block') {
+                this.hideConfessionalPrompt();
+            }
+
+            document.body.style.filter = 'invert(100%) hue-rotate(180deg) saturate(2)';
+            if (gameUiElement) gameUiElement.classList.add('melt-phase-active-background'); // For potential CSS background animations
+
+        } else {
+            // This part is less likely to be used if melt phase is game-ending and game resets
+            if (hudElement) hudElement.style.display = 'block'; // Or 'flex' depending on original display type
+            if (crosshairElement) crosshairElement.style.display = 'block';
+
+            if (teamScoreElement && teamScoreElement.parentElement && teamScoreElement.parentElement.classList.contains('team-info')) {
+                // teamScoreElement.parentElement.style.display = 'block'; // Or original display type
+            } else if (teamScoreElement) {
+                teamScoreElement.style.display = 'block';
+            }
+            if (enemyScoreElement && enemyScoreElement.parentElement && enemyScoreElement.parentElement.classList.contains('enemy-team-info')) {
+                // enemyScoreElement.parentElement.style.display = 'block';
+            } else if (enemyScoreElement) {
+                enemyScoreElement.style.display = 'block';
+            }
+            if (corruptionDisplayElement && corruptionDisplayElement.parentElement && corruptionDisplayElement.parentElement.classList.contains('corruption-display')) {
+               corruptionDisplayElement.parentElement.style.display = 'block'; // Or original display type
+            } else if (corruptionDisplayElement) {
+                 corruptionDisplayElement.style.display = 'block';
+            }
+
+
+            const playerListElement = document.getElementById('player-list');
+            if (playerListElement) playerListElement.style.display = 'block';
+
+
+            document.body.style.filter = 'none';
+            if (gameUiElement) gameUiElement.classList.remove('melt-phase-active-background');
+        }
+    }
+
+    // --- Match Summary Screen Methods ---
+    setupMatchSummaryEventListeners() {
+        if (this.closeSummaryButton) {
+            this.closeSummaryButton.addEventListener('click', () => this.hideMatchSummaryScreen());
+        }
+        if (this.copyTimelineButton && this.summaryTimelineLog) {
+            this.copyTimelineButton.addEventListener('click', () => {
+                if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                    navigator.clipboard.writeText(this.summaryTimelineLog.value)
+                        .then(() => {
+                            if (this.gameCore && this.gameCore.uiManager && typeof this.gameCore.uiManager.addConsoleLogMessage === 'function') {
+                                this.gameCore.uiManager.addConsoleLogMessage("Timeline copied to clipboard!", "info");
+                            } else if (typeof this.addConsoleLogMessage === 'function') { // Fallback if gameCore path is weird
+                                this.addConsoleLogMessage("Timeline copied to clipboard!", "info");
+                            } else {
+                                console.log("Timeline copied to clipboard!"); // Absolute fallback
+                            }
+                        })
+                        .catch(err => {
+                            console.error('Failed to copy timeline: ', err);
+                            if (this.gameCore && this.gameCore.uiManager && typeof this.gameCore.uiManager.addConsoleLogMessage === 'function') {
+                                this.gameCore.uiManager.addConsoleLogMessage("Failed to copy timeline.", "error");
+                            } else if (typeof this.addConsoleLogMessage === 'function') {
+                                this.addConsoleLogMessage("Failed to copy timeline.", "error");
+                            }
+                        });
+                } else {
+                     // Fallback for older browsers or non-secure contexts
+                    this.summaryTimelineLog.select();
+                    document.execCommand('copy');
+                     if (this.gameCore && this.gameCore.uiManager && typeof this.gameCore.uiManager.addConsoleLogMessage === 'function') {
+                        this.gameCore.uiManager.addConsoleLogMessage("Timeline copied (fallback method).", "info");
+                    } else if (typeof this.addConsoleLogMessage === 'function') {
+                        this.addConsoleLogMessage("Timeline copied (fallback method).", "info");
+                    }
+                }
+            });
+        }
+    }
+
+    showMatchSummaryScreen(matchStats, confessionalLogs) {
+        if (!this.matchSummaryScreen) return;
+
+        this.hideGameUI(); // Hide main game UI elements if they are part of a container that isn't auto-hidden
+        this.hideLobbyScreen(); // Ensure lobby is hidden
+        this.hideMainMenu(); // Ensure main menu is hidden
+        if(this.isConsoleOpen) this.toggleConsole(); // Close console
+        if(this.mapRevealActive) this.hideMapReveal(); // Close map reveal
+        if(this.isConfessionalInputVisible()) this.hideConfessionalInput(); // Close confessional input
+
+        this.matchSummaryScreen.style.display = 'block';
+        if(this.gameCore.inputManager) this.gameCore.inputManager.setFocus(false);
+        if(this.gameCore.enablePointerLock) this.gameCore.enablePointerLock(false);
+
+        // Populate Stats
+        if (this.summaryLongestHolder && matchStats.longestHolder) {
+            this.summaryLongestHolder.textContent = matchStats.longestHolder.username
+                ? `${matchStats.longestHolder.username} (${(matchStats.longestHolder.time).toFixed(1)}s)`
+                : 'N/A';
+        }
+        if (this.summaryMostCommands && matchStats.mostCommandsPlayer) {
+            this.summaryMostCommands.textContent = matchStats.mostCommandsPlayer.username
+                ? `${matchStats.mostCommandsPlayer.username} (${matchStats.mostCommandsPlayer.count} commands)`
+                : 'N/A';
+        }
+
+        // Populate Confessionals
+        if (this.summaryConfessionalList && confessionalLogs) {
+            this.summaryConfessionalList.innerHTML = ''; // Clear old
+            // Show up to 3 random or recent - let's show the last 3 for simplicity
+            const numQuotesToShow = Math.min(confessionalLogs.length, 3);
+            const startIndex = Math.max(0, confessionalLogs.length - numQuotesToShow);
+            for (let i = startIndex; i < confessionalLogs.length; i++) {
+                const log = confessionalLogs[i];
+                if(log && log.quote && log.playerName) {
+                    const li = document.createElement('li');
+                    li.innerHTML = `<em>"${this.escapeHTML(log.quote)}"</em> - ${this.escapeHTML(log.playerName)}`;
+                    this.summaryConfessionalList.appendChild(li);
+                }
+            }
+            if(numQuotesToShow === 0) {
+                 const li = document.createElement('li');
+                 li.textContent = "No confessionals recorded during this match.";
+                 this.summaryConfessionalList.appendChild(li);
+            }
+        }
+
+        // Populate Timeline
+        if (this.summaryTimelineLog && matchStats.timeline) {
+            const timelineText = matchStats.timeline
+                .map(event => `[${(event.time).toFixed(1)}s] [${event.type}] ${this.escapeHTML(event.message)}`)
+                .join('\n');
+            this.summaryTimelineLog.value = timelineText;
+            this.summaryTimelineLog.scrollTop = this.summaryTimelineLog.scrollHeight; // Scroll to bottom
+        }
+
+        // Handle Screenshot
+        if (this.summaryScreenshotContainer && this.summaryScreenshotImg && this.downloadScreenshotLink && this.gameCore) {
+            const screenshotDataUrl = (typeof this.gameCore.getEndGameScreenshotDataUrl === 'function')
+                ? this.gameCore.getEndGameScreenshotDataUrl() : null;
+            if (screenshotDataUrl) {
+                this.summaryScreenshotImg.src = screenshotDataUrl;
+                this.downloadScreenshotLink.href = screenshotDataUrl;
+                this.summaryScreenshotContainer.style.display = 'block';
+            } else {
+                this.summaryScreenshotContainer.style.display = 'none';
+            }
+        }
+    }
+
+    hideMatchSummaryScreen() {
+        if (this.matchSummaryScreen) {
+            this.matchSummaryScreen.style.display = 'none';
+        }
+        // Decide what to show next, e.g., main menu
+        this.showMainMenu();
+        // Game focus and pointer lock should be handled by the screen/state we transition to.
+        // For example, if going to main menu, no pointer lock. If restarting game, it will be re-acquired.
     }
 }

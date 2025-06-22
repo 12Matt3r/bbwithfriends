@@ -2,6 +2,35 @@ export class NetworkManager {
     constructor(gameCore) {
         this.gameCore = gameCore;
         this.room = null;
+        this.messageSubscribers = {}; // For event-based subscriptions
+    }
+
+    // Getter for player ID
+    getPlayerId() {
+        return this.room ? this.room.clientId : null;
+    }
+
+    // Getter for username
+    getUsername(playerId) {
+        if (!this.room || !playerId) return null;
+        // Prefer presence data as it might be more frequently updated with username
+        if (this.room.presence && this.room.presence[playerId] && this.room.presence[playerId].username) {
+            return this.room.presence[playerId].username;
+        }
+        // Fallback to peers data
+        if (this.room.peers && this.room.peers[playerId] && this.room.peers[playerId].username) {
+            return this.room.peers[playerId].username;
+        }
+        return 'Player ' + playerId.substring(0, 4); // Default if no username found
+    }
+
+    // Getter for connected peer IDs
+    getConnectedPeersIds() {
+        if (!this.room) return [];
+        // Presence usually includes self, peers usually doesn't.
+        // For "other players", peers is good. For "all active players in lobby", presence might be better.
+        // Let's assume presence keys are the most comprehensive list of active entities.
+        return this.room.presence ? Object.keys(this.room.presence) : [];
     }
     
     async initialize() {
@@ -31,6 +60,25 @@ export class NetworkManager {
                     }
                 }
             }
+
+            // Handle Melt Phase state change from network
+            if (roomState.isMeltPhaseActive !== undefined &&
+                this.gameCore.gameState.isMeltPhaseActive !== roomState.isMeltPhaseActive) {
+
+                this.gameCore.gameState.isMeltPhaseActive = roomState.isMeltPhaseActive;
+                if (this.gameCore.gameState.isMeltPhaseActive) {
+                    console.log("Network signalled: Entering Melt Phase.");
+                    if (this.gameCore.uiManager) this.gameCore.uiManager.setMeltPhaseVisuals(true);
+                    if (this.gameCore.audioManager) this.gameCore.audioManager.startMeltPhaseNarration();
+                    // Optional: setTimeout(() => { this.gameCore.endGame("Corruption reached critical levels."); }, 30000);
+                } else {
+                    // This case might not be used if melt phase is game-ending and resets the game
+                    console.log("Network signalled: Exiting Melt Phase (unlikely).");
+                    if (this.gameCore.uiManager) this.gameCore.uiManager.setMeltPhaseVisuals(false);
+                    if (this.gameCore.audioManager) this.gameCore.audioManager.stopMeltPhaseNarration(); // If it can be stopped
+                }
+            }
+
             this.updateGameState(); // General game state like scores, corruption
         });
         
@@ -39,8 +87,40 @@ export class NetworkManager {
         });
         
         this.room.onmessage = (event) => {
-            this.handleRoomMessage(event.data);
+            //this.handleRoomMessage(event.data); // Old direct handler
+            this.dispatchMessage(event.data); // New dispatch mechanism
         };
+    }
+
+    subscribe(eventName, callback) {
+        if (!this.messageSubscribers[eventName]) {
+            this.messageSubscribers[eventName] = [];
+        }
+        this.messageSubscribers[eventName].push(callback);
+        console.log(`Subscribed to ${eventName}. Current subs:`, this.messageSubscribers[eventName].length);
+    }
+
+    unsubscribe(eventName, callback) {
+        if (this.messageSubscribers[eventName]) {
+            this.messageSubscribers[eventName] = this.messageSubscribers[eventName].filter(cb => cb !== callback);
+        }
+    }
+
+    dispatchMessage(data) {
+        const eventName = data.type;
+        if (this.messageSubscribers[eventName]) {
+            this.messageSubscribers[eventName].forEach(callback => {
+                try {
+                    callback(data); // Pass the whole data object
+                } catch (error) {
+                    console.error(`Error in callback for event ${eventName}:`, error);
+                }
+            });
+        } else {
+            // Fallback to old handler for messages not yet using subscription
+            // console.log(`No direct subscribers for ${eventName}, using default handler if available.`);
+            this.handleRoomMessageFallback(data);
+        }
     }
     
     send(data) {
@@ -58,67 +138,69 @@ export class NetworkManager {
 
     // Specifically for lobby player status updates
     sendLobbyPlayerUpdate(playerData) {
-        this.sendMessage('lobby_player_update', { playerData });
+        this.sendMessage('lobby_player_update', { playerData }); // playerData is the payload itself
+    }
+
+    sendLobbyFullSyncRequest(playerData) {
+        this.sendMessage('lobby_full_sync_request', { playerData }); // playerData is the local player's state
     }
 
     // Specifically for lobby chat messages
     sendLobbyChatMessage(message) {
-        // The sender's name/ID should be available in this.room.clientId or a username property
-        // For WebsimSocket, clientId is usually available.
-        // If a display name is set, prefer that.
-        const playerName = (this.room && this.room.presence[this.room.clientId]?.username) || this.room.clientId || 'UnknownPlayer';
-        this.sendMessage('lobby_chat_message', { message, playerName });
+        const playerId = this.getPlayerId();
+        const playerName = this.getUsername(playerId) || 'UnknownPlayer';
+        // Message structure for LobbyManager: { playerId, message }
+        // Message structure for UIManager: { playerName, message }
+        // Let's make NetworkManager send what LobbyManager expects,
+        // and LobbyManager can prepare it for UIManager.
+        this.sendMessage('lobby_chat_message', { playerId: playerId, message: message });
     }
 
-    sendChaosVote(votedPlayerId) {
-        if (this.room && this.room.clientId) { // Ensure clientId is available
-            this.send({
-                type: 'chaos_vote_cast',
-                voterPlayerId: this.room.clientId,
-                votedPlayerId: votedPlayerId
-            });
-        } else {
-            console.warn("Cannot send chaos vote, room or clientId not available.");
-        }
+    sendChaosVote(voterId, votedForId) { // voterId passed from LobbyManager
+        this.sendMessage('chaos_vote_update', { voterId, votedForId });
     }
 
     sendPlayerEliminated(victimName, killerName, weaponUsed) {
         if (this.room) {
-            this.send({
-                type: 'player_eliminated',
-                victimName: victimName,
-                killerName: killerName,
-                weaponUsed: weaponUsed
-            });
+            this.sendMessage('player_eliminated', { victimName, killerName, weaponUsed });
         }
     }
 
     sendChaosInfluencerDetermined(influencerId) {
-        if (this.room) {
-            this.send({
-                type: 'chaos_influencer_determined',
-                influencerId: influencerId
-            });
-        }  else {
-            console.warn("Cannot send chaos influencer determined, room not available.");
-        }
+        this.sendMessage('chaos_influencer_determined', { influencerId });
     }
 
     sendFragmentPingAlert(carrierId, position) {
-        if (this.room) {
-            this.send({
-                type: 'fragment_ping_alert',
-                carrierId: carrierId,
-                position: position // Ensure position is in a serializable format e.g. [x,y,z]
-            });
+        this.sendMessage('fragment_ping_alert', { carrierId, position });
+    }
+
+    sendOverheatEffect(effectData) { // effectData contains its own .type (like 'explosion')
+        this.sendMessage('overheat_effect', effectData);
+    }
+
+    sendConsoleCommand(commandName, args) {
+        const playerId = this.getPlayerId();
+        if (playerId) {
+            this.sendMessage('console_command', { commandName, arguments: args, playerId });
+        } else {
+            console.warn("Cannot send console command, player ID not available.");
         }
     }
 
-    sendOverheatEffect(effectData) {
-        if (this.room) {
-            // The type of effect (e.g., 'explosion', 'hallucination') is part of effectData.effectType
-            this.send({ type: 'overheat_effect', ...effectData });
-        }
+    sendSwapPlayersCommand(playerA_id, playerB_id) {
+        this.sendMessage('execute_player_swap', { pA_id: playerA_id, pB_id: playerB_id });
+    }
+
+    sendGlitchGravityCommand(gravityVectorObj, durationSeconds) {
+        this.sendMessage('execute_gravity_glitch', { gravity: gravityVectorObj, duration: durationSeconds });
+    }
+
+    sendRevealMapCommand(durationSeconds) {
+        this.sendMessage('execute_reveal_map', { duration: durationSeconds });
+    }
+
+    sendNewConfessionalLog(logEntry) {
+        this.sendMessage('new_confessional_log', { log: logEntry });
     }
     
     updatePresence(data) {
@@ -129,7 +211,7 @@ export class NetworkManager {
                 /* @tweakable weapon state sync for multiplayer visibility */
                 weaponState: {
                     ammo: this.gameCore.player.ammo,
-                    isReloading: this.gameCore.gameState.isReloading,
+                    isReloading: this.gameCore.player.isReloading, // player.isReloading instead of gameState
                     lastShotTime: this.gameCore.player.lastShotTime || 0
                 }
             };
@@ -146,45 +228,43 @@ export class NetworkManager {
     updateRoomStateFragment(fragmentId, fragmentData) {
         if (!this.room) return;
 
-        if (!this.room.roomState.fragments) {
-            this.room.roomState.fragments = {};
-        }
-        // Ensure we send the whole fragmentData object as received from FragmentManager
-        this.room.roomState.fragments[fragmentId] = fragmentData;
+        let fragments = this.room.roomState.fragments || {};
+        fragments[fragmentId] = fragmentData;
 
-        this.updateRoomState({ fragments: this.room.roomState.fragments });
+        this.updateRoomState({ fragments: fragments });
     }
     
-    handleRoomMessage(data) {
+    // This function will handle messages not caught by the new subscription system.
+    // Gradually, messages should be migrated to use subscriptions.
+    handleRoomMessageFallback(data) {
         switch (data.type) {
-            case 'connected':
-                this.gameCore.uiManager.addKillFeedEntry(`${data.username} joined the simulation`);
-                break;
-            case 'disconnected':
-                this.gameCore.uiManager.addKillFeedEntry(`${data.username} disconnected`);
-                // If a disconnected player was the fragment carrier, GameCore/FragmentManager should handle fragment reset.
-                if (this.gameCore.fragmentManager && this.gameCore.fragmentManager.getFragmentState('center_fragment')?.carrierId === data.clientId) {
-                    // This logic might be better handled by the authoritative client noticing the presence drop.
-                    // For now, each client can react to make the fragment available sooner.
-                    console.log(`Fragment carrier ${data.username} disconnected. Authority should reset fragment.`);
-                    // Potentially, the authoritative client would detect this via presence and update roomState.
+            case 'connected': // This could be a subscription too
+                this.gameCore.uiManager.addKillFeedEntry(`${data.username || data.clientId} joined the simulation`);
+                if (this.gameCore.lobbyManager) {
+                     // Potentially notify lobby manager to send its state to the new player,
+                     // or expect the new player to send a full_sync_request.
+                     // this.gameCore.lobbyManager.sendFullStateToNewPlayer(data.clientId);
                 }
-                if (this.gameCore.lobbyManager) { // Also inform lobby manager if in lobby state
-                    this.gameCore.lobbyManager.handlePlayerDisconnect(data.clientId);
+                break;
+            case 'disconnected': // This could be a subscription too
+                this.gameCore.uiManager.addKillFeedEntry(`${data.username || data.clientId} disconnected`);
+                if (this.gameCore.fragmentManager && this.gameCore.fragmentManager.getFragmentState('center_fragment')?.carrierId === data.clientId) {
+                    console.log(`Fragment carrier ${data.username || data.clientId} disconnected. Authority should reset fragment.`);
+                }
+                if (this.gameCore.lobbyManager) {
+                    this.gameCore.lobbyManager.removePlayer(data.clientId); // Updated to call removePlayer
                 }
                 break;
             case 'player_shot':
-                // This is a remote player's shot. We need to draw the trail.
-                if (data.playerId !== this.room.clientId && this.gameCore.effectsManager && this.gameCore.audioManager) {
+                if (data.playerId !== this.getPlayerId() && this.gameCore.effectsManager && this.gameCore.audioManager) {
                     const startPos = new THREE.Vector3().fromArray(data.startPos);
                     const endPos = new THREE.Vector3().fromArray(data.endPos);
                     this.gameCore.effectsManager.createProjectileTrail(startPos, endPos);
-                    // Play sound based on weapon type if available in data, else generic distant shot
                     const soundToPlay = data.weapon === 'scout' ? 'silenced_shot_distant' : 'distant_shot';
                     this.gameCore.audioManager.playSound(soundToPlay, startPos);
                 }
                 break;
-            case 'fragment_collected':
+            case 'fragment_collected': // These specific game events might also become subscriptions
                 this.handleRemoteFragmentCollection(data);
                 break;
             case 'fragment_dropped':
@@ -205,38 +285,74 @@ export class NetworkManager {
             case 'remembrance_triggered':
                 this.handleRemembranceTriggered(data);
                 break;
-            // Lobby related messages
-            case 'lobby_player_update':
-                if (this.gameCore.lobbyManager) {
-                    this.gameCore.lobbyManager.handlePlayerUpdate(data.playerData);
+            // Lobby related messages are now handled by subscriptions in LobbyManager.js
+            // So they are removed from here to avoid double handling if LobbyManager is initialized.
+            // If LobbyManager is NOT initialized, these messages would be 'unhandled' by this fallback.
+            // This is generally fine as lobby messages only matter if the lobby system is active.
+
+            // case 'lobby_player_update': // Handled by subscription
+            // case 'lobby_chat_message':  // Handled by subscription
+            // case 'chaos_vote_update': // Handled by subscription (was chaos_vote_cast)
+            // case 'chaos_influencer_determined': // Handled by subscription
+            // case 'lobby_full_sync_request': // Handled by subscription
+
+            case 'console_command':
+                if (this.gameCore.consoleManager && typeof this.gameCore.consoleManager.executeNetworkedCommand === 'function') {
+                    this.gameCore.consoleManager.executeNetworkedCommand(data.commandName, data.arguments, data.playerId);
+                } else {
+                    console.error("ConsoleManager or executeNetworkedCommand not found for data:", data);
                 }
                 break;
-            case 'lobby_chat_message':
-                if (this.gameCore.uiManager) {
-                    // Ensure UIManager's addChatMessage can handle this structure
-                    // data might be { type: "lobby_chat_message", message: "Hello", playerName: "SpongeBob" }
-                    this.gameCore.uiManager.addChatMessage(data.playerName, data.message);
+
+            case 'execute_player_swap':
+                if (this.gameCore.performPlayerSwap && typeof this.gameCore.performPlayerSwap === 'function') {
+                    this.gameCore.performPlayerSwap(data.pA_id, data.pB_id);
+                } else {
+                    console.error("GameCore.performPlayerSwap not found for data:", data);
                 }
                 break;
-            case 'chaos_vote_cast':
-                if (this.gameCore.lobbyManager && data.voterPlayerId && data.votedPlayerId) {
-                    this.gameCore.lobbyManager.handleChaosVote(data.voterPlayerId, data.votedPlayerId);
+
+            case 'execute_gravity_glitch':
+                if (this.gameCore.player && typeof this.gameCore.player.applyGravityGlitch === 'function') {
+                    this.gameCore.player.applyGravityGlitch(data.gravity, data.duration);
+                } else {
+                    console.error("Player.applyGravityGlitch not found for data:", data);
+                }
+                if (this.gameCore.effectsManager && typeof this.gameCore.effectsManager.triggerGravityGlitchEffect === 'function') {
+                    this.gameCore.effectsManager.triggerGravityGlitchEffect(data.duration);
+                } else {
+                    console.error("EffectsManager.triggerGravityGlitchEffect not found for data:", data);
                 }
                 break;
-            case 'chaos_influencer_determined':
-                if (this.gameCore.lobbyManager && data.influencerId) {
-                    this.gameCore.lobbyManager.setChaosInfluencer(data.influencerId);
+
+            case 'execute_reveal_map':
+                if (this.gameCore.uiManager && typeof this.gameCore.uiManager.showMapReveal === 'function') {
+                    this.gameCore.uiManager.showMapReveal(data.duration);
+                } else {
+                    console.error("UIManager.showMapReveal not found for data:", data);
                 }
                 break;
-            case 'fragment_ping_alert':
+
+            case 'new_confessional_log':
+                if (data.log && data.log.playerId !== this.getPlayerId()) { // Don't re-add own log if broadcast to self
+                    if (this.gameCore.gameState && typeof this.gameCore.gameState.confessionalLogs.push === 'function') {
+                        this.gameCore.gameState.confessionalLogs.push(data.log);
+                    }
+                    if (this.gameCore.uiManager && typeof this.gameCore.uiManager.addConsoleLogMessage === 'function') {
+                        // Optional: Notify other players via console, or a different UI element could display these.
+                        this.gameCore.uiManager.addConsoleLogMessage(`Confessional from ${data.log.playerName || 'a player'} logged.`, "info");
+                    }
+                }
+                break;
+
+            case 'fragment_ping_alert': // This is a good candidate for subscription by EffectsManager/AudioManager
                 if (this.gameCore.effectsManager && this.gameCore.audioManager && this.room) {
-                    this.gameCore.effectsManager.triggerFragmentPingEffect(data.position, data.carrierId === this.room.clientId);
+                    this.gameCore.effectsManager.triggerFragmentPingEffect(data.position, data.carrierId === this.getPlayerId());
                     this.gameCore.audioManager.playSound('fragment_ping');
                 }
                 break;
-            case 'overheat_effect':
+            case 'overheat_effect': // Also a good candidate for subscription
                 if (this.gameCore.effectsManager && this.gameCore.audioManager) {
-                    // data.effectType was specified in GameCore when sending
                     if (data.effectType === 'explosion' && data.position) {
                         this.gameCore.effectsManager.triggerRandomExplosion(data.position);
                         this.gameCore.audioManager.playSound('random_explosion', data.position);
@@ -247,7 +363,7 @@ export class NetworkManager {
                 }
                 break;
             default:
-                console.log('Unhandled room message:', data);
+                console.log('Unhandled room message (fallback):', data);
         }
     }
     
@@ -257,38 +373,28 @@ export class NetworkManager {
     
     handleRemoteFragmentCollection(data) { // This message type might be deprecated if relying purely on roomState.
                                         // For now, it can provide immediate UI feedback.
-        if (data.playerId !== this.room.clientId) {
-            this.gameCore.uiManager.addKillFeedEntry(`${this.room.peers[data.playerId]?.username || 'Unknown'} collected the memory fragment`);
-            
-            // Remove fragment from scene for other players
+        if (data.playerId !== this.getPlayerId()) {
+            const username = this.getUsername(data.playerId) || 'Unknown';
+            this.gameCore.uiManager.addKillFeedEntry(`${username} collected the memory fragment`);
             this.gameCore.fragmentManager.removeFragment('center_fragment');
         }
     }
     
     handleRemoteFragmentDrop(data) {
-        if (data.playerId !== this.room.clientId) {
-            this.gameCore.uiManager.addKillFeedEntry(`${this.room.peers[data.playerId]?.username || 'Unknown'} dropped the memory fragment`);
-            
-            // Spawn fragment at drop location
-            const dropPosition = {
-                x: data.position[0],
-                y: data.position[1], 
-                z: data.position[2]
-            };
+        if (data.playerId !== this.getPlayerId()) {
+            const username = this.getUsername(data.playerId) || 'Unknown';
+            this.gameCore.uiManager.addKillFeedEntry(`${username} dropped the memory fragment`);
+            const dropPosition = { x: data.position[0], y: data.position[1], z: data.position[2] };
             this.gameCore.fragmentManager.createFragment('center_fragment', dropPosition);
         }
     }
     
     handleRemoteFragmentDelivery(data) {
-        if (data.playerId !== this.room.clientId) {
-            const username = this.room.peers[data.playerId]?.username || 'Unknown';
+        if (data.playerId !== this.getPlayerId()) {
+            const username = this.getUsername(data.playerId) || 'Unknown';
             this.gameCore.uiManager.addKillFeedEntry(`${username} delivered a fragment for Team ${data.team.toUpperCase()}`);
-            
-            if (data.team === 'alpha') {
-                this.gameCore.gameState.fragmentsAlpha++;
-            } else {
-                this.gameCore.gameState.fragmentsBeta++;
-            }
+            if (data.team === 'alpha') this.gameCore.gameState.fragmentsAlpha++;
+            else this.gameCore.gameState.fragmentsBeta++;
             this.gameCore.uiManager.updateScoreDisplay();
         }
     }
@@ -296,99 +402,89 @@ export class NetworkManager {
     handleDistortEffect(data) {
         if (data.target === 'enemies' && this.isEnemyPlayer(data.source)) {
             document.getElementById('game-ui').classList.add('inverted');
-            setTimeout(() => {
-                document.getElementById('game-ui').classList.remove('inverted');
-            }, data.duration || 5000);
+            setTimeout(() => document.getElementById('game-ui').classList.remove('inverted'), data.duration || 5000);
         }
     }
     
     handleSignalJam(data) {
-        if (data.source !== this.room.clientId) {
+        if (data.source !== this.getPlayerId()) {
             document.getElementById('hud').style.opacity = '0.3';
-            setTimeout(() => {
-                document.getElementById('hud').style.opacity = '1';
-            }, data.duration || 3000);
+            setTimeout(() => document.getElementById('hud').style.opacity = '1', data.duration || 3000);
         }
     }
     
     handleTreasureMapPickup(data) {
-        if (data.playerId !== this.room.clientId) {
-            const username = this.room.peers[data.playerId]?.username || 'Unknown';
+        if (data.playerId !== this.getPlayerId()) {
+            const username = this.getUsername(data.playerId) || 'Unknown';
             this.gameCore.uiManager.addKillFeedEntry(`${username} acquired the treasure map`);
-            
-            if (this.gameCore.treasureMapManager) {
-                this.gameCore.treasureMapManager.handleNetworkEvent(data);
-            }
+            if (this.gameCore.treasureMapManager) this.gameCore.treasureMapManager.handleNetworkEvent(data);
         }
     }
     
     handleRemembranceTriggered(data) {
-        if (data.triggerPlayer !== this.room.clientId) {
-            const username = this.room.peers[data.triggerPlayer]?.username || 'Unknown';
+        if (data.triggerPlayer !== this.getPlayerId()) {
+            const username = this.getUsername(data.triggerPlayer) || 'Unknown';
             this.gameCore.uiManager.addKillFeedEntry(`${username}'s team triggered the Remembrance Event!`);
-            
-            if (this.gameCore.treasureMapManager) {
-                this.gameCore.treasureMapManager.handleNetworkEvent(data);
-            }
-            
-            // Activate remembrance UI effect
+            if (this.gameCore.treasureMapManager) this.gameCore.treasureMapManager.handleNetworkEvent(data);
             this.gameCore.uiManager.activateRemembranceEffect(data.triggerTeam);
         }
     }
     
     handlePresenceUpdateRequest(updateRequest, fromClientId) {
         if (updateRequest.type === 'damage') {
-            // updateRequest might contain: { type: 'damage', amount: damageAmount, weapon: this.player.weaponType, attackerId: this.player.getPlayerId() }
             const isDead = this.gameCore.player.takeDamage(
                 updateRequest.amount,
                 updateRequest.weapon,
-                updateRequest.attackerId || fromClientId // Use attackerId if provided, else fallback to sender
+                updateRequest.attackerId || fromClientId
             );
-            // Player.takeDamage now handles screen flash and audio via gameCore.
-            // It also calls gameCore.handlePlayerDeath if health <= 0.
-            // UI and presence updates are also handled within Player.takeDamage or GameCore.handlePlayerDeath.
-
-            // No, Player.takeDamage should update its own health and call GameCore.handlePlayerDeath.
-            // GameCore.handlePlayerDeath should then call NetworkManager.updatePresence().
-            // The call to updateHealthDisplay is good here for immediate feedback.
             this.gameCore.uiManager.updateHealthDisplay();
-            
-            // Hit feedback effect is now part of Player.takeDamage via addScreenFlash
-            /* @tweakable damage effect intensity for multiplayer feedback */
             const damageEffectIntensity = updateRequest.amount / 100;
             this.gameCore.effectsManager.addScreenFlash('#ff0000', 300 * damageEffectIntensity);
-            
             if (isDead) {
-                this.gameCore.handlePlayerDeath(fromClientId);
+                this.gameCore.handlePlayerDeath(updateRequest.attackerId || fromClientId); // Pass attackerId
             }
-            
             this.updatePresence(this.gameCore.player.getPresenceData());
         }
     }
     
-    updateGameState() {
+    updateGameState() { // This is called by room.subscribeRoomState
         const roomState = this.room.roomState;
-        
         if (roomState) {
             if (roomState.globalCorruption !== undefined) {
                 this.gameCore.gameState.corruptionLevel = roomState.globalCorruption;
                 this.gameCore.uiManager.updateCorruptionDisplay();
             }
-            
             if (roomState.scoreAlpha !== undefined) {
                 this.gameCore.gameState.scoreAlpha = roomState.scoreAlpha;
-                this.gameCore.uiManager.updateScoreDisplay();
             }
-            
             if (roomState.scoreBeta !== undefined) {
                 this.gameCore.gameState.scoreBeta = roomState.scoreBeta;
-                this.gameCore.uiManager.updateScoreDisplay();
+            }
+            if(roomState.scoreAlpha !== undefined || roomState.scoreBeta !== undefined) {
+                 this.gameCore.uiManager.updateScoreDisplay();
+            }
+            // Handle Overheat Mode state change from network (moved from initialize for clarity)
+            if (roomState.isOverheatModeActive !== undefined &&
+                this.gameCore.gameState.isOverheatModeActive !== roomState.isOverheatModeActive) {
+                this.gameCore.gameState.isOverheatModeActive = roomState.isOverheatModeActive;
+                if (this.gameCore.effectsManager) {
+                    if (this.gameCore.gameState.isOverheatModeActive) {
+                        this.gameCore.effectsManager.startOverheatVisualGlitches();
+                    } else {
+                        this.gameCore.effectsManager.stopOverheatVisualGlitches();
+                    }
+                }
+            }
+             // Update fragments from network (moved from initialize for clarity)
+            if (this.gameCore.fragmentManager && roomState.fragments) {
+                this.gameCore.fragmentManager.updateFragmentsFromNetwork(roomState.fragments);
             }
         }
     }
     
     isEnemyPlayer(playerId) {
         const playerPresence = this.room.presence[playerId];
-        return playerPresence && playerPresence.team !== this.gameCore.player.team;
+        const localPlayerTeam = this.gameCore.player.team;
+        return playerPresence && playerPresence.team !== localPlayerTeam;
     }
 }

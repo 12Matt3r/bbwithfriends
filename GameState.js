@@ -12,6 +12,20 @@ export class GameState {
         this.nextOverheatExplosionTime = 0; // For GameCore to manage timing
         this.nextHallucinationTime = 0;   // For GameCore to manage timing
         this.gameTime = 0;
+        this.isMeltPhaseActive = false; // Added for Melt Phase
+        this.confessionalLogs = []; // Added for Confessional Booths
+        this.streamerData = {
+            chaosInfluencerName: 'N/A',
+            corruptionLevel: 0,
+            recentEvents: []
+        };
+        this.matchStats = {
+            timeline: [],
+            fragmentHoldTimes: {}, // { playerId: { username: "name", totalTimeHoldingFragment: 0 } }
+            commandUsage: {},      // { playerId: { username: "name", count: 0, commands: {cmdName: count} } }
+            longestHolder: { playerId: null, username: null, time: 0 },
+            mostCommandsPlayer: { playerId: null, username: null, count: 0 }
+        };
         /* @tweakable score needed to win the game */
         this.winScore = 50;
     }
@@ -28,6 +42,20 @@ export class GameState {
         this.nextOverheatExplosionTime = 0;
         this.nextHallucinationTime = 0;
         this.gameTime = 0;
+        this.isMeltPhaseActive = false; // Reset Melt Phase
+        this.confessionalLogs = []; // Reset Confessional Logs
+        this.streamerData = {
+            chaosInfluencerName: 'N/A',
+            corruptionLevel: 0,
+            recentEvents: []
+        };
+        this.matchStats = {
+            timeline: [],
+            fragmentHoldTimes: {},
+            commandUsage: {},
+            longestHolder: { playerId: null, username: null, time: 0 },
+            mostCommandsPlayer: { playerId: null, username: null, count: 0 }
+        };
     }
     
     // addScore is kept as direct score addition is still used for some events,

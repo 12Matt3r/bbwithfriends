@@ -5,6 +5,56 @@ export class EffectsManager {
         this.scene = scene;
         this.gameState = gameState;
         this.environment = environment;
+        this.activeCorruptionEffects = {};
+        this.corruptionDecalMaterial = null;
+        this.initializeCorruptionEffects();
+
+        this.currentMutationLevel = 0;
+        this.mutationEffectInterval = null;
+        this.gameCore = environment.gameCore; // Assuming environment has a ref to gameCore, or pass gameCore directly
+
+        this.speakingIndicators = {}; // { playerId: THREE.Sprite }
+        this.speakingIndicatorMaterial = null;
+        this.initSpeakingIndicator();
+    }
+
+    initSpeakingIndicator() {
+        try {
+            const speakerTexture = new THREE.TextureLoader().load('speaker_icon.png',
+                () => {}, // Optional onLoad callback
+                undefined, // Optional onProgress callback
+                (err) => { console.error('EffectsManager: Error loading speaker_icon.png:', err); } // onError callback
+            );
+            this.speakingIndicatorMaterial = new THREE.SpriteMaterial({
+                map: speakerTexture,
+                color: 0xffffff,
+                transparent: true,
+                depthTest: false, // Render on top of other objects
+                depthWrite: false // Don't write to depth buffer
+            });
+        } catch (error) {
+            console.error("EffectsManager: Failed to initialize speaker icon material:", error);
+            // Fallback material if texture loading fails hard (e.g. TextureLoader not available)
+            this.speakingIndicatorMaterial = new THREE.SpriteMaterial({
+                color: 0x00ff00, // Bright green as fallback
+                transparent: true,
+                opacity: 0.8,
+                depthTest: false,
+                depthWrite: false
+            });
+        }
+    }
+
+    initializeCorruptionEffects() {
+        this.corruptionDecalMaterial = new THREE.MeshPhongMaterial({
+            color: 0x2a002a, // Dark, slightly emissive purple from plan
+            emissive: 0x1a001a,
+            transparent: true,
+            opacity: 0.65, // Plan opacity
+            depthWrite: false,
+            polygonOffset: true,
+            polygonOffsetFactor: -0.1,
+        });
     }
     
     createHitEffect(position) {
@@ -450,6 +500,251 @@ export class EffectsManager {
             setTimeout(() => {
                 crosshairDot.style.backgroundColor = originalColor || 'var(--primary-color)';
             }, 100);
+        }
+    }
+
+    startTerrainCorruption(effectId, positionObj, radius) {
+        if (!this.corruptionDecalMaterial || !this.environment?.collidableMeshes) {
+            console.warn("Corruption effects not initialized or environment not ready for raycasting.");
+            return;
+        }
+        this.stopTerrainCorruption(effectId); // Clear existing decals for this effectId first
+
+        const corruptionData = {
+            position: new THREE.Vector3(positionObj.x, positionObj.y, positionObj.z),
+            radius,
+            decals: []
+        };
+        this.activeCorruptionEffects[effectId] = corruptionData;
+
+        const NUM_CORRUPTION_DECALS = 20; // Plan value
+        const DECAL_SIZE_MIN = 1.5;
+        const DECAL_SIZE_MAX = 3.0; // Plan value
+        const raycaster = new THREE.Raycaster(); // Raycaster should be initialized if not already a class member
+
+        for (let i = 0; i < NUM_CORRUPTION_DECALS; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = Math.random() * radius;
+            const randomPointX = positionObj.x + Math.cos(angle) * dist;
+            const randomPointZ = positionObj.z + Math.sin(angle) * dist;
+
+            raycaster.set(new THREE.Vector3(randomPointX, positionObj.y + radius * 2, randomPointZ), new THREE.Vector3(0, -1, 0));
+
+            // Use environment collidable meshes as potential ground targets
+            const groundObjects = this.environment.collidableMeshes.filter(m => m.name.includes("floor") || m.name.includes("ground") || m.name.includes("terrain")); // Be more specific if possible
+            if (groundObjects.length === 0) { // Fallback to all collidables if no specific ground found
+                 groundObjects.push(...this.environment.collidableMeshes);
+            }
+
+            const intersects = raycaster.intersectObjects(groundObjects.length > 0 ? groundObjects : this.scene.children, true);
+
+            if (intersects.length > 0) {
+                const hitPoint = intersects[0].point;
+                const decalSize = DECAL_SIZE_MIN + Math.random() * (DECAL_SIZE_MAX - DECAL_SIZE_MIN);
+                const decalGeo = new THREE.PlaneGeometry(decalSize, decalSize);
+                const decal = new THREE.Mesh(decalGeo, this.corruptionDecalMaterial);
+
+                decal.position.set(hitPoint.x, hitPoint.y + 0.05, hitPoint.z);
+                decal.rotation.x = -Math.PI / 2;
+                decal.rotation.z = Math.random() * Math.PI; // Plan uses Math.PI, current uses Math.PI * 2. Sticking to plan.
+
+                this.scene.add(decal);
+                corruptionData.decals.push(decal);
+            }
+        }
+        console.log(`Started terrain corruption for ${effectId} with ${corruptionData.decals.length} decals.`);
+    }
+
+    stopTerrainCorruption(effectId) {
+        const corruptionData = this.activeCorruptionEffects[effectId];
+        if (corruptionData) {
+            corruptionData.decals.forEach(decal => {
+                this.scene.remove(decal);
+                decal.geometry.dispose();
+                // Material is shared, so don't dispose it here unless it's unique per decal set
+            });
+            delete this.activeCorruptionEffects[effectId];
+            console.log(`Stopped terrain corruption for ${effectId}.`);
+        }
+    }
+
+    stopAllTerrainCorruption() {
+        for (const id in this.activeCorruptionEffects) {
+            this.stopTerrainCorruption(id);
+        }
+        console.log("Stopped all terrain corruption effects.");
+    }
+
+    setPlayerMutationEffectLevel(level) {
+        if (this.currentMutationLevel === level && this.mutationEffectInterval && level !== 0) return; // Avoid restarting interval if level is same and interval exists
+
+        this.currentMutationLevel = level;
+        const gameUiElement = document.getElementById('game-ui'); // More specific than document.body
+
+        // Clear previous interval if any
+        if (this.mutationEffectInterval) {
+            clearInterval(this.mutationEffectInterval);
+            this.mutationEffectInterval = null;
+        }
+
+        // Remove all mutation-related screen effect classes
+        if(gameUiElement) {
+            gameUiElement.classList.remove('mutation-level-1', 'mutation-level-2');
+        } else {
+            document.body.classList.remove('mutation-level-1', 'mutation-level-2'); // Fallback
+        }
+        // Example if using post-processing: this.removePostProcessingEffect('mutation_distort');
+
+        switch (level) {
+            case 1:
+                if(gameUiElement) gameUiElement.classList.add('mutation-level-1'); else document.body.classList.add('mutation-level-1');
+                // Example: this.addPostProcessingEffect('mutation_distort_mild');
+                if (this.gameCore?.audioManager) this.gameCore.audioManager.playSound('mutation_level_1_start');
+                console.log("Player Mutation Level 1 activated.");
+                break;
+            case 2:
+                if(gameUiElement) gameUiElement.classList.add('mutation-level-2'); else document.body.classList.add('mutation-level-2');
+                // Example: this.addPostProcessingEffect('mutation_distort_strong');
+                if (this.gameCore?.audioManager) this.gameCore.audioManager.playSound('mutation_level_2_start');
+                console.log("Player Mutation Level 2 activated. Hallucinations may occur.");
+
+                this.mutationEffectInterval = setInterval(() => {
+                    if (this.currentMutationLevel === 2 && this.gameCore) {
+                        if(this.gameCore.audioManager) this.gameCore.audioManager.playSound('local_hallucination_whisper');
+                        this.addScreenFlash(Math.random() > 0.5 ? '#300330' : '#033003', 100, 0.2 + Math.random() * 0.1); // Quick dark flash, varied opacity
+                    } else if (this.currentMutationLevel < 2 && this.mutationEffectInterval) {
+                        clearInterval(this.mutationEffectInterval); // Stop if level drops below 2
+                        this.mutationEffectInterval = null;
+                    }
+                }, 8000 + Math.random() * 5000); // Random interval 8-13s
+                break;
+            case 0:
+            default:
+                // Effects already cleared above
+                if (this.gameCore?.audioManager) this.gameCore.audioManager.playSound('mutation_end');
+                console.log("Player Mutation effects ended.");
+                break;
+        }
+    }
+
+    triggerSummonEchoEffect() {
+        console.log("Summon Echo effect triggered!");
+        // Using existing addScreenFlash, opacity is fixed at 0.3 by the method.
+        // If variable opacity is needed, addScreenFlash would need modification.
+        this.addScreenFlash('#a0a0ff', 300); // Light blue/purple flash for 300ms.
+
+        if (this.gameCore && this.gameCore.audioManager && typeof this.gameCore.audioManager.playSound === 'function') {
+            this.gameCore.audioManager.playSound('summon_echo_sound'); // Assumes this sound key exists
+        } else {
+            console.warn("AudioManager or playSound method not available for summon_echo_sound.");
+        }
+    }
+
+    triggerSwapEffect(position) {
+        console.log("Swap effect triggered at", position);
+
+        // Visual effect: Brief, expanding light sphere
+        const sphereRadius = 0.5;
+        const sphereGeometry = new THREE.SphereGeometry(sphereRadius, 16, 8);
+        const sphereMaterial = new THREE.MeshBasicMaterial({
+            color: 0xffa500, // Orange color for swap
+            transparent: true,
+            opacity: 0.7
+        });
+        const lightSphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+        lightSphere.position.copy(position);
+        this.scene.add(lightSphere);
+
+        const effectDuration = 500; // ms
+        const startTime = Date.now();
+
+        const animateEffect = () => {
+            const elapsed = Date.now() - startTime;
+            const progress = elapsed / effectDuration;
+
+            if (progress >= 1) {
+                this.scene.remove(lightSphere);
+                sphereGeometry.dispose();
+                sphereMaterial.dispose();
+                return;
+            }
+
+            lightSphere.scale.setScalar(1 + progress * 3); // Expand
+            lightSphere.material.opacity = 0.7 * (1 - progress); // Fade out
+
+            requestAnimationFrame(animateEffect);
+        };
+        animateEffect();
+
+        if (this.gameCore && this.gameCore.audioManager && typeof this.gameCore.audioManager.playSound === 'function') {
+            // Assuming playSound can handle positional audio if the AudioManager supports it
+            this.gameCore.audioManager.playSound('swap_effect_sound', position);
+        } else {
+            console.warn("AudioManager or playSound method not available for swap_effect_sound.");
+        }
+    }
+
+    triggerGravityGlitchEffect(duration) {
+        console.log("Gravity glitch effect triggered for duration:", duration);
+
+        // Visual cue: Purple flash
+        this.addScreenFlash('#551A8B', 500); // Purple color, 500ms duration (opacity is fixed at 0.3 by addScreenFlash)
+
+        if (this.gameCore && this.gameCore.audioManager && typeof this.gameCore.audioManager.playSound === 'function') {
+            this.gameCore.audioManager.playSound('gravity_glitch_start_sound'); // Assumes this sound key exists
+        } else {
+            console.warn("AudioManager or playSound method not available for gravity_glitch_start_sound.");
+        }
+
+        // Optional: Could start a persistent, mild screen effect here and stop it when gravity reverts.
+        // For example, a very subtle screen shake or a slight desaturation filter applied via a CSS class on the body/game-container.
+        // This would require a corresponding `stopGravityGlitchVisualEffect()` method or similar.
+        // For now, just an initial visual/audio cue.
+    }
+
+    setPlayerSpeakingIndicator(playerId, isSpeaking, playerMesh) {
+        if (!this.speakingIndicatorMaterial) {
+            console.warn("setPlayerSpeakingIndicator: Speaking indicator material not initialized.");
+            return;
+        }
+
+        if (isSpeaking) {
+            if (!playerMesh) { // Cannot create indicator without a mesh to attach to
+                // console.warn(`setPlayerSpeakingIndicator: Cannot show for ${playerId}, playerMesh not provided.`);
+                return;
+            }
+            let indicator = this.speakingIndicators[playerId];
+            if (!indicator) {
+                indicator = new THREE.Sprite(this.speakingIndicatorMaterial.clone()); // Clone material for safety if props change
+                indicator.scale.set(0.3, 0.3, 0.3);
+
+                // Attempt to position above player's head
+                // This assumes playerMesh is the root of the player model and has a boundingBox
+                let yOffset = 1.0; // Default offset above origin
+                if (playerMesh.geometry && playerMesh.geometry.boundingBox) {
+                    yOffset = playerMesh.geometry.boundingBox.max.y + 0.3;
+                } else if (playerMesh.userData && typeof playerMesh.userData.height === 'number') { // Custom height property
+                    yOffset = playerMesh.userData.height + 0.3;
+                }
+                indicator.position.set(0, yOffset, 0);
+
+                playerMesh.add(indicator);
+                this.speakingIndicators[playerId] = indicator;
+                // console.log(`Added speaking indicator for ${playerId}`);
+            }
+            indicator.visible = true;
+        } else {
+            if (this.speakingIndicators[playerId]) {
+                this.speakingIndicators[playerId].visible = false;
+                // console.log(`Hid speaking indicator for ${playerId}`);
+                // Optionally, fully remove and dispose if players frequently connect/disconnect
+                // if (this.speakingIndicators[playerId].parent) {
+                //     this.speakingIndicators[playerId].parent.remove(this.speakingIndicators[playerId]);
+                // }
+                // this.speakingIndicators[playerId].material.map?.dispose(); // If map was cloned
+                // this.speakingIndicators[playerId].material.dispose();
+                // delete this.speakingIndicators[playerId];
+            }
         }
     }
 }

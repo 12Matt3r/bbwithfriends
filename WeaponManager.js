@@ -9,7 +9,9 @@ export const WEAPON_CONFIG = {
         spreadAngle: 0.01,
         ammoCapacity: 30,
         reloadTime: 2500,
-        auto: true
+        auto: true,
+        canSprintShoot: false,
+        reloadSound: 'reload_rifle'
     },
     'scout': { // Was 'pistol'
         fireRate: 150,
@@ -19,7 +21,9 @@ export const WEAPON_CONFIG = {
         ammoCapacity: 24,
         reloadTime: 2000,
         auto: false,
-        silenced: true // Added from old config
+        silenced: true,
+        canSprintShoot: true, // Scouts can shoot while sprinting
+        reloadSound: 'reload_pistol'
     },
     'heavy': { // Was 'shotgun'
         fireRate: 700,
@@ -28,7 +32,9 @@ export const WEAPON_CONFIG = {
         spreadAngle: 0.2,
         ammoCapacity: 8,
         reloadTime: 3000,
-        auto: false
+        auto: false,
+        canSprintShoot: false,
+        reloadSound: 'reload_shotgun'
     }
 };
 
