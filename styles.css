@@ -943,6 +943,8 @@ body #game-ui {
 #console-output .error { color: #f00; } /* Red for errors */
 #console-output .info { color: #0f0; } /* Green for info */
 #console-output .response { color: #0ff; } /* Cyan for responses */
+#console-output .audience { color: #ff69b4; font-style: italic; } /* Hot pink for audience */
+#console-output .special_effect { color: #ffff00; font-weight: bold; } /* Yellow for self effects */
 
 
 .console-input-line {

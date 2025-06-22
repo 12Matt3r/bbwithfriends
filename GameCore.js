@@ -1100,17 +1100,15 @@ export class GameCore {
         }
     }
     
-    handlePlayerDeath(killerId) {
+    handlePlayerDeath(killerId, killingWeaponParam = null) {
         // This method is called when the local player dies.
-        // killerId is passed from Player.takeDamage, which got it from a network message or local event.
+        // killerId and killingWeaponParam are passed from Player.takeDamage
 
-        // const victimName = this.player.username || this.player.getPlayerId(); // Use username if available
-        // Safely get username from local player's presence data if available, or fallback
         const localPlayerPresence = this.networkManager?.room?.presence[this.player.getPlayerId()] || {};
-        const victimName = localPlayerPresence.username || this.player.getPlayerId();
+        const victimName = localPlayerPresence.username || this.player.getPlayerId(); // Use local player's username
 
-        let killerName = "The Environment"; // Default killer
-        let killingWeapon = "Unknown";
+        let killerName = "The Environment";
+        let weaponUsed = killingWeaponParam; // Prioritize weapon passed from takeDamage
 
         if (killerId) {
             if (killerId === this.player.getPlayerId()) {
@@ -1118,26 +1116,27 @@ export class GameCore {
             } else if (this.networkManager.room && this.networkManager.room.presence[killerId]) {
                 killerName = this.networkManager.room.presence[killerId].username || killerId;
             }
-            // Attempt to get weapon from player's lastDamageInfo
-            if (this.player.lastDamageInfo && this.player.lastDamageInfo.attackerId === killerId) {
-                killingWeapon = this.player.lastDamageInfo.weapon || "Unknown";
+            // Fallback if weapon not passed directly from takeDamage (e.g. environmental death or if takeDamage wasn't modified yet)
+            if (!weaponUsed && this.player.lastDamageInfo && this.player.lastDamageInfo.attackerId === killerId) {
+                weaponUsed = this.player.lastDamageInfo.weapon;
             }
         }
-        
+        if (!weaponUsed) weaponUsed = "Unknown"; // Ensure weaponUsed has a value
+
         // Send the elimination message to all clients (including self)
         if (this.networkManager) {
-            this.networkManager.sendPlayerEliminated(victimName, killerName, killingWeapon);
+            this.networkManager.sendPlayerEliminated(victimName, killerName, weaponUsed);
         } else {
             // If no network, show locally for single player testing
-            this.uiManager.addKillFeedEntry(killerName, victimName, killingWeapon);
+            this.uiManager.addKillFeedEntry(killerName, victimName, weaponUsed);
         }
         // Add streamer event for player elimination
         if (this.streamerDataManager && typeof this.streamerDataManager.addStreamerEvent === 'function') {
-            this.streamerDataManager.addStreamerEvent(`${killerName} eliminated ${victimName} with ${killingWeapon}`);
+            this.streamerDataManager.addStreamerEvent(`${killerName} [${weaponUsed}] ${victimName}`);
         }
         // Add match stats timeline event
         if (this.matchStatsManager && typeof this.matchStatsManager.addTimelineEvent === 'function') {
-            this.matchStatsManager.addTimelineEvent(`${killerName} eliminated ${victimName} with ${killingWeapon}`, "elimination");
+            this.matchStatsManager.addTimelineEvent(`${killerName} [${weaponUsed}] ${victimName}`, "elimination");
         }
 
 
