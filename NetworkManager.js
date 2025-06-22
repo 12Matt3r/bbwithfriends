@@ -15,8 +15,23 @@ export class NetworkManager {
         
         this.room.subscribeRoomState(() => {
             const roomState = this.room.roomState || {};
-            this.gameCore.fragmentManager.updateFragments(roomState.fragments || {});
-            this.updateGameState();
+            if (this.gameCore.fragmentManager && roomState.fragments) { // Ensure fragmentManager exists
+                this.gameCore.fragmentManager.updateFragmentsFromNetwork(roomState.fragments);
+            }
+
+            // Handle Overheat Mode state change from network
+            if (roomState.isOverheatModeActive !== undefined &&
+                this.gameCore.gameState.isOverheatModeActive !== roomState.isOverheatModeActive) {
+                this.gameCore.gameState.isOverheatModeActive = roomState.isOverheatModeActive;
+                if (this.gameCore.effectsManager) { // Ensure effectsManager exists
+                    if (this.gameCore.gameState.isOverheatModeActive) {
+                        this.gameCore.effectsManager.startOverheatVisualGlitches();
+                    } else {
+                        this.gameCore.effectsManager.stopOverheatVisualGlitches();
+                    }
+                }
+            }
+            this.updateGameState(); // General game state like scores, corruption
         });
         
         this.room.subscribePresenceUpdateRequests((updateRequest, fromClientId) => {
@@ -29,8 +44,80 @@ export class NetworkManager {
     }
     
     send(data) {
-        if (this.room) {
+        if (this.room && this.room.readyState === WebSocket.OPEN) { // Ensure socket is open
             this.room.send(data);
+        } else {
+            console.warn("Attempted to send data, but WebSocket is not open.", data);
+        }
+    }
+
+    // Send generic message to the room
+    sendMessage(type, payload) {
+        this.send({ type, ...payload });
+    }
+
+    // Specifically for lobby player status updates
+    sendLobbyPlayerUpdate(playerData) {
+        this.sendMessage('lobby_player_update', { playerData });
+    }
+
+    // Specifically for lobby chat messages
+    sendLobbyChatMessage(message) {
+        // The sender's name/ID should be available in this.room.clientId or a username property
+        // For WebsimSocket, clientId is usually available.
+        // If a display name is set, prefer that.
+        const playerName = (this.room && this.room.presence[this.room.clientId]?.username) || this.room.clientId || 'UnknownPlayer';
+        this.sendMessage('lobby_chat_message', { message, playerName });
+    }
+
+    sendChaosVote(votedPlayerId) {
+        if (this.room && this.room.clientId) { // Ensure clientId is available
+            this.send({
+                type: 'chaos_vote_cast',
+                voterPlayerId: this.room.clientId,
+                votedPlayerId: votedPlayerId
+            });
+        } else {
+            console.warn("Cannot send chaos vote, room or clientId not available.");
+        }
+    }
+
+    sendPlayerEliminated(victimName, killerName, weaponUsed) {
+        if (this.room) {
+            this.send({
+                type: 'player_eliminated',
+                victimName: victimName,
+                killerName: killerName,
+                weaponUsed: weaponUsed
+            });
+        }
+    }
+
+    sendChaosInfluencerDetermined(influencerId) {
+        if (this.room) {
+            this.send({
+                type: 'chaos_influencer_determined',
+                influencerId: influencerId
+            });
+        }  else {
+            console.warn("Cannot send chaos influencer determined, room not available.");
+        }
+    }
+
+    sendFragmentPingAlert(carrierId, position) {
+        if (this.room) {
+            this.send({
+                type: 'fragment_ping_alert',
+                carrierId: carrierId,
+                position: position // Ensure position is in a serializable format e.g. [x,y,z]
+            });
+        }
+    }
+
+    sendOverheatEffect(effectData) {
+        if (this.room) {
+            // The type of effect (e.g., 'explosion', 'hallucination') is part of effectData.effectType
+            this.send({ type: 'overheat_effect', ...effectData });
         }
     }
     
@@ -55,6 +142,18 @@ export class NetworkManager {
             this.room.updateRoomState(data);
         }
     }
+
+    updateRoomStateFragment(fragmentId, fragmentData) {
+        if (!this.room) return;
+
+        if (!this.room.roomState.fragments) {
+            this.room.roomState.fragments = {};
+        }
+        // Ensure we send the whole fragmentData object as received from FragmentManager
+        this.room.roomState.fragments[fragmentId] = fragmentData;
+
+        this.updateRoomState({ fragments: this.room.roomState.fragments });
+    }
     
     handleRoomMessage(data) {
         switch (data.type) {
@@ -63,9 +162,27 @@ export class NetworkManager {
                 break;
             case 'disconnected':
                 this.gameCore.uiManager.addKillFeedEntry(`${data.username} disconnected`);
+                // If a disconnected player was the fragment carrier, GameCore/FragmentManager should handle fragment reset.
+                if (this.gameCore.fragmentManager && this.gameCore.fragmentManager.getFragmentState('center_fragment')?.carrierId === data.clientId) {
+                    // This logic might be better handled by the authoritative client noticing the presence drop.
+                    // For now, each client can react to make the fragment available sooner.
+                    console.log(`Fragment carrier ${data.username} disconnected. Authority should reset fragment.`);
+                    // Potentially, the authoritative client would detect this via presence and update roomState.
+                }
+                if (this.gameCore.lobbyManager) { // Also inform lobby manager if in lobby state
+                    this.gameCore.lobbyManager.handlePlayerDisconnect(data.clientId);
+                }
                 break;
             case 'player_shot':
-                this.handleRemoteShot(data);
+                // This is a remote player's shot. We need to draw the trail.
+                if (data.playerId !== this.room.clientId && this.gameCore.effectsManager && this.gameCore.audioManager) {
+                    const startPos = new THREE.Vector3().fromArray(data.startPos);
+                    const endPos = new THREE.Vector3().fromArray(data.endPos);
+                    this.gameCore.effectsManager.createProjectileTrail(startPos, endPos);
+                    // Play sound based on weapon type if available in data, else generic distant shot
+                    const soundToPlay = data.weapon === 'scout' ? 'silenced_shot_distant' : 'distant_shot';
+                    this.gameCore.audioManager.playSound(soundToPlay, startPos);
+                }
                 break;
             case 'fragment_collected':
                 this.handleRemoteFragmentCollection(data);
@@ -88,29 +205,58 @@ export class NetworkManager {
             case 'remembrance_triggered':
                 this.handleRemembranceTriggered(data);
                 break;
+            // Lobby related messages
+            case 'lobby_player_update':
+                if (this.gameCore.lobbyManager) {
+                    this.gameCore.lobbyManager.handlePlayerUpdate(data.playerData);
+                }
+                break;
+            case 'lobby_chat_message':
+                if (this.gameCore.uiManager) {
+                    // Ensure UIManager's addChatMessage can handle this structure
+                    // data might be { type: "lobby_chat_message", message: "Hello", playerName: "SpongeBob" }
+                    this.gameCore.uiManager.addChatMessage(data.playerName, data.message);
+                }
+                break;
+            case 'chaos_vote_cast':
+                if (this.gameCore.lobbyManager && data.voterPlayerId && data.votedPlayerId) {
+                    this.gameCore.lobbyManager.handleChaosVote(data.voterPlayerId, data.votedPlayerId);
+                }
+                break;
+            case 'chaos_influencer_determined':
+                if (this.gameCore.lobbyManager && data.influencerId) {
+                    this.gameCore.lobbyManager.setChaosInfluencer(data.influencerId);
+                }
+                break;
+            case 'fragment_ping_alert':
+                if (this.gameCore.effectsManager && this.gameCore.audioManager && this.room) {
+                    this.gameCore.effectsManager.triggerFragmentPingEffect(data.position, data.carrierId === this.room.clientId);
+                    this.gameCore.audioManager.playSound('fragment_ping');
+                }
+                break;
+            case 'overheat_effect':
+                if (this.gameCore.effectsManager && this.gameCore.audioManager) {
+                    // data.effectType was specified in GameCore when sending
+                    if (data.effectType === 'explosion' && data.position) {
+                        this.gameCore.effectsManager.triggerRandomExplosion(data.position);
+                        this.gameCore.audioManager.playSound('random_explosion', data.position);
+                    } else if (data.effectType === 'hallucination' && data.position && data.enemyType) {
+                        this.gameCore.effectsManager.spawnHallucinatedEnemy(data.position, data.enemyType);
+                        this.gameCore.audioManager.playSound('hallucination_spawn', data.position);
+                    }
+                }
+                break;
             default:
                 console.log('Unhandled room message:', data);
         }
     }
     
-    handleRemoteShot(data) {
-        if (data.playerId !== this.room.clientId) {
-            this.gameCore.audioManager.playSound('distant_shot');
-            
-            // Create visual effect for remote player shots
-            if (data.position && data.direction) {
-                /* @tweakable remote shot effect visibility duration */
-                const effectDuration = 200;
-                this.gameCore.effectsManager.createRemoteShotEffect(
-                    new THREE.Vector3(...data.position),
-                    new THREE.Vector3(...data.direction),
-                    effectDuration
-                );
-            }
-        }
-    }
+    // handleRemoteShot is effectively replaced by the 'player_shot' case above for trails.
+    // Muzzle flash for remote players could be added here if 'player_shot' included a weapon muzzle point.
+    // For now, only local player sees their own muzzle flash.
     
-    handleRemoteFragmentCollection(data) {
+    handleRemoteFragmentCollection(data) { // This message type might be deprecated if relying purely on roomState.
+                                        // For now, it can provide immediate UI feedback.
         if (data.playerId !== this.room.clientId) {
             this.gameCore.uiManager.addKillFeedEntry(`${this.room.peers[data.playerId]?.username || 'Unknown'} collected the memory fragment`);
             
@@ -192,10 +338,22 @@ export class NetworkManager {
     
     handlePresenceUpdateRequest(updateRequest, fromClientId) {
         if (updateRequest.type === 'damage') {
-            const isDead = this.gameCore.player.takeDamage(updateRequest.amount);
+            // updateRequest might contain: { type: 'damage', amount: damageAmount, weapon: this.player.weaponType, attackerId: this.player.getPlayerId() }
+            const isDead = this.gameCore.player.takeDamage(
+                updateRequest.amount,
+                updateRequest.weapon,
+                updateRequest.attackerId || fromClientId // Use attackerId if provided, else fallback to sender
+            );
+            // Player.takeDamage now handles screen flash and audio via gameCore.
+            // It also calls gameCore.handlePlayerDeath if health <= 0.
+            // UI and presence updates are also handled within Player.takeDamage or GameCore.handlePlayerDeath.
+
+            // No, Player.takeDamage should update its own health and call GameCore.handlePlayerDeath.
+            // GameCore.handlePlayerDeath should then call NetworkManager.updatePresence().
+            // The call to updateHealthDisplay is good here for immediate feedback.
             this.gameCore.uiManager.updateHealthDisplay();
             
-            // Add hit feedback effect
+            // Hit feedback effect is now part of Player.takeDamage via addScreenFlash
             /* @tweakable damage effect intensity for multiplayer feedback */
             const damageEffectIntensity = updateRequest.amount / 100;
             this.gameCore.effectsManager.addScreenFlash('#ff0000', 300 * damageEffectIntensity);

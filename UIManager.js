@@ -1,13 +1,37 @@
 export class UIManager {
     constructor(gameCore) {
         this.gameCore = gameCore;
+        // DOM elements for lobby
+        this.lobbyScreen = document.getElementById('lobby-screen');
+        this.lobbyPlayerList = document.getElementById('lobby-player-list');
+        this.avatarSelect = document.getElementById('avatar-select');
+        this.teamColorSelect = document.getElementById('team-color-select');
+        this.readyButton = document.getElementById('ready-button');
+        this.chatMessages = document.getElementById('chat-messages');
+        this.chatInputField = document.getElementById('chat-input-field');
+        this.sendChatButton = document.getElementById('send-chat-button');
+        // Chaos Vote elements
+        this.chaosVoteList = document.getElementById('chaos-vote-list');
+        this.chaosInfluencerDisplay = document.getElementById('chaos-influencer-display');
+        this.chaosInfluencerName = document.getElementById('chaos-influencer-name');
+
+        // Corruption and Kill Feed
+        this.corruptionDisplay = document.getElementById('corruption-level'); // Target the element showing the percentage
+        this.killFeedContainer = document.getElementById('kill-feed');
+
+
         this.setupEventListeners();
         this.setupWeaponSelection();
     }
     
     setupEventListeners() {
+        // Main Menu
         document.getElementById('join-game').addEventListener('click', () => {
-            this.gameCore.startGame();
+            // This will likely transition to the lobby first, then start game
+            // For now, let's assume it shows the lobby
+            this.hideMainMenu();
+            this.showLobbyScreen();
+            // this.gameCore.startGame(); // Original line, might be handled by LobbyManager later
         });
         
         document.getElementById('controls-btn').addEventListener('click', () => {
@@ -17,8 +41,116 @@ export class UIManager {
         document.getElementById('play-again').addEventListener('click', () => {
             this.gameCore.restartGame();
         });
+
+        // Lobby Screen listeners
+        if (this.avatarSelect) {
+            this.avatarSelect.addEventListener('change', (e) => {
+                if (this.gameCore.lobbyManager) {
+                    this.gameCore.lobbyManager.handleAvatarSelection(e.target.value);
+                }
+            });
+        }
+
+        if (this.teamColorSelect) {
+            this.teamColorSelect.addEventListener('change', (e) => {
+                if (this.gameCore.lobbyManager) {
+                    this.gameCore.lobbyManager.handleTeamColorSelection(e.target.value);
+                }
+            });
+        }
+
+        if (this.readyButton) {
+            this.readyButton.addEventListener('click', () => {
+                if (this.gameCore.lobbyManager) {
+                    this.gameCore.lobbyManager.handleReadyButtonClick();
+                    // Toggle visual state of the ready button
+                    this.readyButton.classList.toggle('ready');
+                    this.readyButton.textContent = this.readyButton.classList.contains('ready') ? 'Unready' : 'Ready';
+                }
+            });
+        }
+
+        if (this.sendChatButton) {
+            this.sendChatButton.addEventListener('click', () => {
+                this.sendChatMessage();
+            });
+        }
+
+        if (this.chatInputField) {
+            this.chatInputField.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    this.sendChatMessage();
+                }
+            });
+        }
+
+        // Chaos Vote listener
+        if (this.chaosVoteList) {
+            this.chaosVoteList.addEventListener('click', (e) => {
+                if (e.target && e.target.classList.contains('vote-button')) {
+                    const votedPlayerId = e.target.dataset.playerId;
+                    if (votedPlayerId && this.gameCore.lobbyManager) {
+                        this.gameCore.lobbyManager.castChaosVote(votedPlayerId);
+                        // Optionally disable the button or all vote buttons for this user here
+                        // e.g., e.target.disabled = true;
+                        // or this.disableAllVoteButtons();
+                    }
+                }
+            });
+        }
+
+        // Class Selection listeners
+        const classButtons = document.querySelectorAll('.class-select-button');
+        classButtons.forEach(button => {
+            button.addEventListener('click', (event) => {
+                if (this.gameCore.lobbyManager) {
+                    const selectedClass = event.target.dataset.class;
+                    classButtons.forEach(btn => btn.classList.remove('selected'));
+                    event.target.classList.add('selected');
+                    this.gameCore.lobbyManager.handleClassSelection(selectedClass);
+                }
+            });
+        });
     }
-    
+
+    disableAllVoteButtons() {
+        if (!this.chaosVoteList) return;
+        const buttons = this.chaosVoteList.querySelectorAll('.vote-button');
+        buttons.forEach(button => button.disabled = true);
+    }
+
+    sendChatMessage() {
+        const message = this.chatInputField.value.trim();
+        if (message && this.gameCore.networkManager) {
+            // Assuming NetworkManager will have a method to send chat messages
+            this.gameCore.networkManager.sendLobbyChatMessage(message);
+            this.chatInputField.value = '';
+        }
+        // For local display until network part is fully up:
+        // this.addChatMessage('You', message);
+    }
+
+    addChatMessage(playerName, message, isSystemMessage = false) {
+        if (!this.chatMessages) return;
+        const messageElement = document.createElement('div');
+        messageElement.classList.add('chat-message');
+        if (isSystemMessage) {
+            messageElement.classList.add('system-message');
+            messageElement.innerHTML = `<em>${message}</em>`;
+        } else {
+            messageElement.innerHTML = `<span class="player-name">${playerName}:</span> ${this.escapeHTML(message)}`;
+        }
+        this.chatMessages.appendChild(messageElement);
+        this.chatMessages.scrollTop = this.chatMessages.scrollHeight; // Scroll to bottom
+    }
+
+    // Helper to prevent XSS from chat messages
+    escapeHTML(str) {
+        const div = document.createElement('div');
+        div.appendChild(document.createTextNode(str));
+        return div.innerHTML;
+    }
+
     setupWeaponSelection() {
         // Add weapon selection UI to main menu
         const weaponSelector = document.createElement('div');
@@ -59,6 +191,25 @@ export class UIManager {
     
     hideMainMenu() {
         document.getElementById('main-menu').classList.add('hidden');
+    }
+
+    showLobbyScreen() {
+        if (this.lobbyScreen) {
+            this.lobbyScreen.classList.remove('hidden');
+            // Potentially refresh player list or other lobby elements here
+            if(this.gameCore.lobbyManager) {
+                // Example: Fetch initial lobby state if needed
+                // this.gameCore.lobbyManager.requestLobbyState();
+            }
+        }
+        this.hideMainMenu(); // Ensure main menu is hidden
+        this.hideGameUI(); // Ensure game UI is hidden
+    }
+
+    hideLobbyScreen() {
+        if (this.lobbyScreen) {
+            this.lobbyScreen.classList.add('hidden');
+        }
     }
     
     showGameUI() {
@@ -201,17 +352,48 @@ export class UIManager {
         document.getElementById('ammo-count').textContent = `${this.gameCore.player.ammo}/${this.gameCore.player.maxAmmo}`;
     }
     
-    updateCorruptionDisplay() {
-        const corruptionLevel = document.getElementById('corruption-level');
-        const corruptionFill = document.querySelector('.corruption-fill');
-        
-        if (corruptionLevel) {
-            corruptionLevel.textContent = `${Math.floor(this.gameCore.gameState.corruptionLevel)}%`;
+    updateCorruptionDisplay() { // Parameter 'level' is not used, uses gameCore.gameState
+        const corruptionLevelValue = Math.floor(this.gameCore.gameState.corruptionLevel);
+        if (this.corruptionDisplay) { // This is #corruption-level
+            this.corruptionDisplay.textContent = `${corruptionLevelValue}%`;
         }
         
+        const corruptionFill = document.querySelector('.corruption-fill'); // This is for the main menu bar
         if (corruptionFill) {
-            corruptionFill.style.width = `${this.gameCore.gameState.corruptionLevel}%`;
+            corruptionFill.style.width = `${corruptionLevelValue}%`;
         }
+        // If a separate in-game UI bar for corruption needs update, add here.
+    }
+
+    // Modified addKillFeedEntry from previous version to match current plan
+    addKillFeedEntry(killerName, victimName, weaponUsed) {
+        if (!this.killFeedContainer) return;
+
+        const messageEl = document.createElement('div');
+        messageEl.classList.add('kill-feed-message');
+
+        let message = `${killerName} eliminated ${victimName}`;
+        if (weaponUsed && weaponUsed !== 'Unknown') {
+            message += ` (with ${weaponUsed})`;
+        }
+        messageEl.textContent = message;
+
+        // Prepend to have new messages at the top if flex-direction: column (or bottom if column-reverse)
+        this.killFeedContainer.insertBefore(messageEl, this.killFeedContainer.firstChild);
+
+        const MAX_KILL_FEED_MESSAGES = 5;
+        if (this.killFeedContainer.children.length > MAX_KILL_FEED_MESSAGES) {
+            this.killFeedContainer.removeChild(this.killFeedContainer.lastChild);
+        }
+
+        setTimeout(() => {
+            messageEl.classList.add('fade-out');
+            setTimeout(() => {
+                if (messageEl.parentNode) {
+                    messageEl.remove();
+                }
+            }, 500); // CSS transition time
+        }, 5000); // Message visible time
     }
     
     showFragmentIndicator() {
@@ -222,45 +404,171 @@ export class UIManager {
         document.getElementById('fragment-indicator').classList.add('hidden');
     }
     
-    updatePlayerList() {
+    updatePlayerList() { // This is for the IN-GAME player list
         const content = document.getElementById('player-list-content');
+        if (!content) return;
         content.innerHTML = '';
         
-        Object.entries(this.gameCore.networkManager.room.peers).forEach(([id, peer]) => {
-            const entry = document.createElement('div');
-            entry.className = 'player-entry';
+        // This part needs actual player data from NetworkManager or GameState
+        // For now, let's assume it works with gameCore.networkManager.room.peers
+        if (this.gameCore.networkManager && this.gameCore.networkManager.room && this.gameCore.networkManager.room.peers) {
+            Object.entries(this.gameCore.networkManager.room.peers).forEach(([id, peer]) => {
+                const entry = document.createElement('div');
+                entry.className = 'player-entry';
+
+                const presence = this.gameCore.networkManager.room.presence[id] || {};
+                const team = presence.team || 'unknown'; // Default team if not specified
+
+                entry.innerHTML = `
+                    <span class="player-name player-team-${team}">${peer.username || 'Player'}</span>
+                    <span class="player-health">${presence.health || 100}</span>
+                `;
+
+                content.appendChild(entry);
+            });
+        }
+    }
+
+    updateLobbyPlayerList(playersData) { // Renamed arg from players to playersData for consistency
+        if (!this.lobbyPlayerList) return;
+        this.lobbyPlayerList.innerHTML = ''; // Clear existing list
+
+        if (!playersData || playersData.length === 0) {
+            const emptyItem = document.createElement('li');
+            emptyItem.textContent = 'Waiting for players...';
+            emptyItem.style.opacity = '0.7';
+            this.lobbyPlayerList.appendChild(emptyItem);
+            return;
+        }
+
+        playersData.forEach(player => {
+            const playerItem = document.createElement('li');
+            playerItem.style.display = 'flex';
+            playerItem.style.justifyContent = 'space-between';
+            playerItem.style.alignItems = 'center';
+            playerItem.style.padding = '0.4rem 0.2rem';
+            playerItem.style.borderBottom = '1px solid rgba(0, 170, 255, 0.2)';
+
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = player.username || player.id;
+            nameSpan.style.flexGrow = '1';
+
+            const classSpan = document.createElement('span');
+            classSpan.textContent = `(${player.playerClass || 'N/A'})`; // Display player class
+            classSpan.style.margin = '0 0.5rem';
+            classSpan.style.fontSize = '0.8em';
+            classSpan.style.fontStyle = 'italic';
+            classSpan.style.opacity = '0.7';
+
+
+            const avatarSpan = document.createElement('span');
+            avatarSpan.textContent = `(${player.avatar || '???'})`;
+            avatarSpan.style.margin = '0 0.5rem';
+            avatarSpan.style.fontSize = '0.8em';
+            avatarSpan.style.opacity = '0.8';
+
+            const teamColorSpan = document.createElement('span');
+            teamColorSpan.textContent = `[${player.teamColor || 'N/A'}]`;
+            teamColorSpan.style.color = player.teamColor || 'var(--primary-color)';
+            teamColorSpan.style.fontWeight = 'bold';
+            teamColorSpan.style.margin = '0 0.5rem';
+            teamColorSpan.style.fontSize = '0.8em';
+
+            const readySpan = document.createElement('span');
+            readySpan.textContent = player.isReady ? '✅ Ready' : '⏳ Not Ready';
+            readySpan.style.color = player.isReady ? 'lime' : 'orange';
+            readySpan.style.fontWeight = player.isReady ? 'bold' : 'normal';
+            readySpan.style.minWidth = '100px';
+            readySpan.style.textAlign = 'right';
+
+            playerItem.appendChild(nameSpan);
+            playerItem.appendChild(classSpan); // Added class display
+            playerItem.appendChild(avatarSpan);
+            playerItem.appendChild(teamColorSpan);
+            playerItem.appendChild(readySpan);
             
-            const presence = this.gameCore.networkManager.room.presence[id] || {};
-            const team = presence.team || 'unknown';
-            
-            entry.innerHTML = `
-                <span class="player-name player-team-${team}">${peer.username}</span>
-                <span class="player-health">${presence.health || 100}</span>
-            `;
-            
-            content.appendChild(entry);
+            if (this.gameCore.lobbyManager && player.id === this.gameCore.lobbyManager.getPlayerId()) {
+                playerItem.style.background = 'rgba(0, 170, 255, 0.1)';
+            }
+
+            this.lobbyPlayerList.appendChild(playerItem);
         });
     }
-    
-    addKillFeedEntry(text) {
-        const killFeed = document.getElementById('kill-feed');
-        const entry = document.createElement('div');
-        entry.className = 'kill-entry';
-        entry.textContent = text;
-        
-        killFeed.appendChild(entry);
-        
-        setTimeout(() => {
-            if (entry.parentNode) {
-                entry.parentNode.removeChild(entry);
+
+    updateChaosVoteList(playersData, localPlayerId, votes, chaosInfluencerId, localPlayerVotedFor) {
+        if (!this.chaosVoteList) return;
+        this.chaosVoteList.innerHTML = '';
+
+        if (!playersData || playersData.length === 0) {
+            const emptyItem = document.createElement('li');
+            emptyItem.textContent = 'No players to vote for.';
+            this.chaosVoteList.appendChild(emptyItem);
+            this.updateChaosInfluencerDisplay(null, playersData); // Clear display
+            return;
+        }
+
+        playersData.forEach(player => { // Assumes playersData is an array
+            const voteItem = document.createElement('li');
+            // Styles for voteItem are in CSS, but can add inline if needed
+
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = player.username || player.id;
+            if (player.id === chaosInfluencerId) {
+                nameSpan.textContent += " 👑"; // Crown for influencer
+                nameSpan.style.color = 'var(--secondary-color)';
+                nameSpan.style.fontWeight = 'bold';
             }
-        }, 5000);
-        
-        while (killFeed.children.length > 5) {
-            killFeed.removeChild(killFeed.firstChild);
+            nameSpan.style.flexGrow = '1';
+
+            const voteCountSpan = document.createElement('span');
+            voteCountSpan.className = 'vote-count';
+            voteCountSpan.textContent = `(${(votes && votes[player.id]) || 0} votes)`;
+
+            voteItem.appendChild(nameSpan);
+            voteItem.appendChild(voteCountSpan);
+
+            if (player.id !== localPlayerId) {
+                const voteButton = document.createElement('button');
+                voteButton.className = 'vote-button';
+                voteButton.dataset.playerId = player.id;
+                voteButton.textContent = 'Vote';
+                if (localPlayerVotedFor) { // If local player has already voted for anyone
+                    voteButton.disabled = true;
+                }
+                voteItem.appendChild(voteButton);
+            } else {
+                // Placeholder for alignment or local player indicator
+                const placeholder = document.createElement('span');
+                placeholder.style.minWidth = '60px'; // Approx width of vote button
+                voteItem.appendChild(placeholder);
+            }
+            this.chaosVoteList.appendChild(voteItem);
+        });
+        this.updateChaosInfluencerDisplay(chaosInfluencerId, playersData);
+    }
+
+    updateChaosInfluencerDisplay(chaosInfluencerId, playersData) {
+        if (!this.chaosInfluencerDisplay || !this.chaosInfluencerName) return;
+
+        if (chaosInfluencerId) {
+            const influencer = playersData.find(p => p.id === chaosInfluencerId);
+            if (influencer) {
+                this.chaosInfluencerName.textContent = influencer.username || influencer.id;
+                this.chaosInfluencerName.style.color = 'var(--secondary-color)';
+                this.chaosInfluencerDisplay.classList.remove('hidden');
+            } else {
+                this.chaosInfluencerName.textContent = 'Undetermined';
+                this.chaosInfluencerDisplay.classList.add('hidden');
+            }
+        } else {
+            this.chaosInfluencerName.textContent = 'None yet';
+            // Keep it visible or hide based on preference, for now, show "None yet"
+            this.chaosInfluencerDisplay.classList.remove('hidden');
         }
     }
     
+    // Old addKillFeedEntry(text) is replaced by the new one above.
+
     showControls() {
         alert(`CONTROLS:
         
@@ -437,4 +745,22 @@ WARNING: Using Sandy's computer increases corruption levels in Bikini Bottom.`);
     
     lastAlphaScore = 0;
     lastBetaScore = 0;
+
+    showNotification(message) {
+        const existingNotification = document.getElementById('game-notification');
+        if (existingNotification) {
+            existingNotification.remove();
+        }
+
+        const notificationElement = document.createElement('div');
+        notificationElement.id = 'game-notification';
+        notificationElement.textContent = message;
+        document.body.appendChild(notificationElement); // Append to body to ensure it's on top
+
+        setTimeout(() => {
+            if (notificationElement.parentNode) {
+                notificationElement.remove();
+            }
+        }, 3000); // Display for 3 seconds
+    }
 }

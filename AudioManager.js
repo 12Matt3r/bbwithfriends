@@ -31,6 +31,17 @@ export class AudioManager {
         } else if (soundType === 'distant_shot') {
             // Subtle flash for distant shots
             this.addScreenFlash('#002244', 25);
+        } else if (soundType === 'fragment_ping') {
+            // Add a specific visual or console log for fragment ping
+            console.log("Fragment Ping sound triggered!");
+            this.addScreenFlash('rgba(0,150,255,0.2)', 500); // A light blue, quick flash
+        } else if (soundType === 'random_explosion') {
+            console.log("Random explosion sound triggered!");
+            // Potentially a different flash for environmental explosion vs direct hit
+            this.addScreenFlash('rgba(255,120,0,0.3)', 400); // Orange flash
+        } else if (soundType === 'hallucination_spawn') {
+            console.log("Hallucination spawn sound triggered!");
+            this.addScreenFlash('rgba(120,0,120,0.2)', 700); // Purpleish flash
         }
     }
     

@@ -1,54 +1,79 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
+export const WEAPON_CONFIG = {
+    'assault': { // Was 'rifle' in instructions, but Player.js setClass uses 'assault' etc.
+        fireRate: 100,
+        damagePerPellet: 20,
+        pelletCount: 1,
+        spreadAngle: 0.01,
+        ammoCapacity: 30,
+        reloadTime: 2500,
+        auto: true
+    },
+    'scout': { // Was 'pistol'
+        fireRate: 150,
+        damagePerPellet: 15,
+        pelletCount: 2,
+        spreadAngle: 0.05,
+        ammoCapacity: 24,
+        reloadTime: 2000,
+        auto: false,
+        silenced: true // Added from old config
+    },
+    'heavy': { // Was 'shotgun'
+        fireRate: 700,
+        damagePerPellet: 10,
+        pelletCount: 8,
+        spreadAngle: 0.2,
+        ammoCapacity: 8,
+        reloadTime: 3000,
+        auto: false
+    }
+};
+
 export class WeaponManager {
     constructor(scene, camera, player, audioManager) {
         this.scene = scene;
-        this.camera = camera;
-        this.player = player;
+        this.camera = camera; // Local player's camera
+        this.player = player; // Local player instance
         this.audioManager = audioManager;
+        this.gameCore = player.gameCore;
         this.loader = new GLTFLoader();
         
         this.weaponModel = null;
         this.muzzleFlash = null;
         this.isReloading = false;
         
-        // Weapon types with distinct properties
-        /* @tweakable weapon type configurations for tactical variety */
-        this.weaponTypes = {
-            assault: {
-                damage: 25,
-                fireRate: 150, // ms between shots
-                maxAmmo: 30,
-                reloadTime: 2000,
-                spread: 0.02,
-                recoil: 0.015,
-                moveSpeedMod: 1.0
-            },
-            scout: {
-                damage: 35,
-                fireRate: 300,
-                maxAmmo: 15,
-                reloadTime: 1500,
-                spread: 0.005,
-                recoil: 0.01,
-                moveSpeedMod: 1.2,
-                silenced: true
-            },
-            heavy: {
-                damage: 45,
-                fireRate: 800,
-                maxAmmo: 8,
-                reloadTime: 3000,
-                spread: 0.08,
-                recoil: 0.03,
-                moveSpeedMod: 0.8,
-                pellets: 5 // shotgun pellets
-            }
-        };
-        
         this.lastShotTime = 0;
         this.recoilOffset = new THREE.Vector2(0, 0);
+        this.raycaster = new THREE.Raycaster();
+    }
+
+    // getCurrentWeaponDamage is removed, damage is per pellet in WEAPON_CONFIG
+
+    getWeaponMuzzlePosition() {
+        if (!this.weaponModel) {
+            // Fallback if model not loaded, return camera position
+            const fallbackPosition = new THREE.Vector3();
+            this.camera.getWorldPosition(fallbackPosition);
+            return fallbackPosition;
+        }
+        // Attempt to get a specific "muzzle" child object if defined in GLB
+        const muzzleObject = this.weaponModel.getObjectByName('muzzle'); // Or any predefined name
+        if (muzzleObject) {
+            const worldPosition = new THREE.Vector3();
+            muzzleObject.getWorldPosition(worldPosition);
+            return worldPosition;
+        }
+        // Fallback: Use weapon model's world position with a forward offset
+        // This assumes the weapon model's origin is where it's held
+        const position = new THREE.Vector3();
+        this.weaponModel.getWorldPosition(position);
+        const direction = new THREE.Vector3();
+        this.weaponModel.getWorldDirection(direction); // Weapon model's forward
+        position.add(direction.multiplyScalar(0.5)); // Move 0.5 units forward from model origin
+        return position;
     }
     
     async loadWeaponModel() {
@@ -146,135 +171,135 @@ export class WeaponManager {
         this.weaponModel.add(this.muzzleFlash);
     }
     
-    shoot() {
-        const currentWeapon = this.weaponTypes[this.player.weaponType];
-        const now = Date.now();
-        
-        if (this.isReloading || !this.player.shoot() || 
-            now - this.lastShotTime < currentWeapon.fireRate) {
-            this.audioManager.playSound('empty');
+    shoot(cameraWorldDirection, cameraWorldPosition) {
+        const weaponConfig = this.player.getWeaponConfig(); // Player now has this method
+        if (!weaponConfig) {
+            console.error("No weapon config found for player's weapon type:", this.player.weaponType);
             return null;
         }
+
+        // Fire rate and ammo checks are now expected to be done in GameCore.handleShoot()
+        // Player.shoot() only decrements ammo and returns true if >0. It's called by GameCore.handleShoot()
+        // This method is now primarily about the raycasting and hit application for one "shot" action.
+
+        this.lastShotTime = Date.now(); // Still useful for local effects like muzzle flash timing
+        // Player's lastShotTime for fire rate control is set in GameCore.handleShoot
         
-        this.lastShotTime = now;
-        
-        // Enhanced muzzle flash effect
+        const weaponMuzzlePosition = this.getWeaponMuzzlePosition();
+
+        // Muzzle Flash
         if (this.muzzleFlash) {
             this.muzzleFlash.material.opacity = 1;
-            /* @tweakable muzzle flash intensity and duration */
             this.muzzleFlash.scale.setScalar(1.5 + Math.random() * 0.5);
             setTimeout(() => {
-                this.muzzleFlash.material.opacity = 0;
-                this.muzzleFlash.scale.setScalar(1);
+                if(this.muzzleFlash) {
+                    this.muzzleFlash.material.opacity = 0;
+                    this.muzzleFlash.scale.setScalar(1);
+                }
             }, 80);
         }
         
-        // Enhanced camera recoil with screen shake
-        /* @tweakable camera recoil and screen shake intensity */
-        const recoilIntensity = currentWeapon.recoil * 1.2;
-        const screenShakeIntensity = 0.005;
-        
-        this.recoilOffset.x += (Math.random() - 0.5) * recoilIntensity;
-        this.recoilOffset.y += recoilIntensity * 0.8;
-        
-        // Add screen shake effect
-        if (this.camera) {
-            const originalPosition = this.camera.position.clone();
-            this.camera.position.add(new THREE.Vector3(
-                (Math.random() - 0.5) * screenShakeIntensity,
-                (Math.random() - 0.5) * screenShakeIntensity,
-                (Math.random() - 0.5) * screenShakeIntensity
-            ));
-            
-            setTimeout(() => {
-                this.camera.position.copy(originalPosition);
-            }, 50);
-        }
-        
-        // Create bullet trail(s) based on weapon type
+        // Recoil (visual effect on camera)
+        const recoilConfig = WEAPON_CONFIG[this.player.weaponType]?.recoil || 0.01; // Fallback recoil
+        this.recoilOffset.x += (Math.random() - 0.5) * recoilConfig * 2; // More horizontal kick
+        this.recoilOffset.y += recoilConfig; // Vertical kick
+
         const results = [];
-        const pelletCount = currentWeapon.pellets || 1;
-        
+        const pelletCount = weaponConfig.pelletCount || 1;
+
         for (let i = 0; i < pelletCount; i++) {
-            const raycaster = new THREE.Raycaster();
-            const direction = new THREE.Vector2(0, 0);
+            const shotDirection = cameraWorldDirection.clone();
+            const spread = weaponConfig.spreadAngle || 0;
+
+            if (pelletCount > 1) { // Apply spread for shotguns or multi-shot pistols
+                 // Simple cone spread:
+                const s = Math.random() * spread;
+                const angle = Math.random() * Math.PI * 2;
+                const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(Math.cos(angle) * s, Math.sin(angle) * s, 1).normalize(), s);
+                shotDirection.applyQuaternion(q);
+            } else if (spread > 0) { // Single pellet with some inaccuracy
+                 const s = Math.random() * spread;
+                const angle = Math.random() * Math.PI * 2;
+                const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(Math.cos(angle) * s, Math.sin(angle) * s, 1).normalize(), s);
+                shotDirection.applyQuaternion(q);
+            }
+            // For dual pistols (pelletCount: 2), a fixed offset might be better than random spread for each.
+            // Example: if (weaponConfig.pelletCount === 2) {
+            //    const offsetAngle = 0.02; // Small angle to separate shots
+            //    const sideVector = new THREE.Vector3().crossVectors(cameraWorldDirection, this.camera.up).normalize();
+            //    if (i === 0) shotDirection.add(sideVector.multiplyScalar(-offsetAngle));
+            //    else shotDirection.add(sideVector.multiplyScalar(offsetAngle));
+            //    shotDirection.normalize();
+            // }
+
+
+            this.raycaster.set(cameraWorldPosition, shotDirection);
+            const collidables = this.gameCore.getCollidableEntities();
+            const intersects = this.raycaster.intersectObjects(collidables, true);
+
+            let hitPointOrFarPoint = cameraWorldPosition.clone().add(shotDirection.multiplyScalar(100)); // Default far point
+            let hitTarget = null;
+
+            if (intersects.length > 0) {
+                for (const hit of intersects) {
+                    if (hit.object.userData?.playerId === this.player.getPlayerId() || hit.object === this.weaponModel || (this.weaponModel && this.weaponModel.contains(hit.object))) {
+                        continue; // Skip self-hits or hits on own weapon
+                    }
+                    hitPointOrFarPoint = hit.point.clone();
+                    hitTarget = hit.object;
+                    break;
+                }
+            }
             
-            // Add weapon spread
-            direction.x += (Math.random() - 0.5) * currentWeapon.spread;
-            direction.y += (Math.random() - 0.5) * currentWeapon.spread;
-            
-            raycaster.setFromCamera(direction, this.camera);
-            
-            // Create visible bullet trail
-            this.createBulletTrail(raycaster.ray.origin, raycaster.ray.direction);
-            
-            const intersects = raycaster.intersectObjects(this.scene.children, true);
-            results.push({
-                raycaster,
-                intersects,
-                damage: currentWeapon.damage
+            if (this.gameCore.effectsManager) {
+                this.gameCore.effectsManager.createProjectileTrail(weaponMuzzlePosition.clone(), hitPointOrFarPoint.clone());
+            }
+
+            if (hitTarget) {
+                if (hitTarget.userData.playerId && hitTarget.userData.type === 'player') {
+                    const targetPlayerId = hitTarget.userData.playerId;
+                    if (this.gameCore.networkManager && this.gameCore.networkManager.room) {
+                        this.gameCore.networkManager.room.requestPresenceUpdate(targetPlayerId, {
+                            type: 'damage',
+                            amount: weaponConfig.damagePerPellet,
+                            weapon: this.player.weaponType,
+                            attackerId: this.player.getPlayerId()
+                        });
+                        if(this.gameCore.effectsManager) this.gameCore.effectsManager.showHitConfirmation();
+                    }
+                } else {
+                    if (this.gameCore.effectsManager) {
+                        let materialType = 'generic';
+                        if(hitTarget.material && hitTarget.material.name) materialType = hitTarget.material.name;
+                        else if(hitTarget.name) materialType = hitTarget.name; // Use object name as fallback
+                        this.gameCore.effectsManager.createImpactEffect(hitPointOrFarPoint.clone(), materialType);
+                    }
+                }
+            }
+            results.push({ hitPoint: hitPointOrFarPoint, hitTarget });
+        }
+
+        if (this.gameCore.networkManager) {
+            const primaryHitPoint = results.length > 0 ? results[0].hitPoint : cameraWorldPosition.clone().add(cameraWorldDirection.multiplyScalar(100));
+            this.gameCore.networkManager.send({
+                type: 'player_shot',
+                playerId: this.player.getPlayerId(),
+                startPos: weaponMuzzlePosition.toArray(),
+                endPos: primaryHitPoint.toArray(),
+                weapon: this.player.weaponType
             });
         }
-        
-        // Play appropriate sound
-        if (currentWeapon.silenced) {
-            this.audioManager.playSound('silenced_shot');
+
+        const soundPosition = weaponMuzzlePosition;
+        if (weaponConfig.silenced) {
+            this.audioManager.playSound('silenced_shot', soundPosition);
         } else {
-            this.audioManager.playSound('shoot');
+            this.audioManager.playSound('shoot', soundPosition);
         }
         
         return results;
     }
-    
-    createBulletTrail(origin, direction) {
-        /* @tweakable bullet trail visual properties */
-        const trailLength = 50;
-        const trailSpeed = 150; // increased from 100 for better visibility
-        const trailWidth = 0.03; // increased from 0.02
         
-        const geometry = new THREE.CylinderGeometry(trailWidth, trailWidth * 0.3, trailLength * 0.15);
-        const material = new THREE.MeshBasicMaterial({
-            color: 0x00ffff,
-            transparent: true,
-            opacity: 0.9,
-            emissive: 0x004444,
-            emissiveIntensity: 0.8
-        });
-        
-        const trail = new THREE.Mesh(geometry, material);
-        trail.position.copy(origin);
-        trail.lookAt(origin.clone().add(direction));
-        trail.rotateX(Math.PI / 2);
-        
-        this.scene.add(trail);
-        
-        // Enhanced trail animation with glow effect
-        const startTime = Date.now();
-        /* @tweakable bullet trail lifetime in milliseconds */
-        const trailLifetime = 300; // reduced from 500 for snappier feel
-        
-        const animate = () => {
-            const elapsed = Date.now() - startTime;
-            const progress = elapsed / trailLifetime;
-            
-            if (progress >= 1) {
-                this.scene.remove(trail);
-                return;
-            }
-            
-            // Move trail forward
-            trail.position.add(direction.clone().multiplyScalar(trailSpeed * 0.016));
-            
-            // Enhanced fade with pulsing effect
-            const pulse = Math.sin(elapsed * 0.01) * 0.2 + 0.8;
-            trail.material.opacity = 0.9 * (1 - progress) * pulse;
-            trail.material.emissiveIntensity = 0.8 * (1 - progress * 0.5);
-            
-            requestAnimationFrame(animate);
-        };
-        animate();
-    }
-    
     updateRecoil(deltaTime) {
         // Gradually return camera to center from recoil
         /* @tweakable recoil recovery speed */

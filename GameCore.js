@@ -11,6 +11,39 @@ import { TreasureMapManager } from './TreasureMapManager.js';
 import { WeaponManager } from './WeaponManager.js';
 import { GameState } from './GameState.js';
 import { EffectsManager } from './EffectsManager.js';
+import { LobbyManager } from './LobbyManager.js'; // Added LobbyManager import
+
+// Define spawn points globally or at a scope accessible by relevant methods
+const TEAM_ALPHA_SPAWN_POINTS = [
+    { x: -50, y: 2, z: 0, facing: Math.PI / 2 }, // Facing towards center
+    { x: -55, y: 2, z: 5, facing: Math.PI / 2 },
+    { x: -55, y: 2, z: -5, facing: Math.PI / 2 }
+];
+const TEAM_BETA_SPAWN_POINTS = [
+    { x: 50, y: 2, z: 0, facing: -Math.PI / 2 }, // Facing towards center
+    { x: 55, y: 2, z: 5, facing: -Math.PI / 2 },
+    { x: 55, y: 2, z: -5, facing: -Math.PI / 2 }
+];
+let alphaSpawnIndex = 0;
+let betaSpawnIndex = 0;
+
+const TEAM_ALPHA_BASE_CENTER = { x: -50, y: 2, z: 0 };
+const TEAM_BETA_BASE_CENTER = { x: 50, y: 2, z: 0 };
+const BASE_RADIUS = 10;
+const BASE_RADIUS_SQUARED = BASE_RADIUS * BASE_RADIUS; // For cheaper distance checks
+const SCORE_INTERVAL_SECONDS = 1.0; // How often to try and award points from accumulator
+
+// Helper function for distance squared
+function distanceSquared(pos1, pos2) {
+    // Ensure pos1 is an object {x, y, z} if it's coming as an array [x,y,z] from presence
+    const p1 = Array.isArray(pos1) ? {x: pos1[0], y: pos1[1], z: pos1[2]} : pos1;
+    const p2 = Array.isArray(pos2) ? {x: pos2[0], y: pos2[1], z: pos2[2]} : pos2;
+
+    const dx = p1.x - p2.x;
+    const dy = p1.y - p2.y; // Consider if y-distance should matter for base capture
+    const dz = p1.z - p2.z;
+    return dx * dx + dy * dy + dz * dz;
+}
 
 export class GameCore {
     constructor() {
@@ -19,7 +52,10 @@ export class GameCore {
         this.renderer = null;
         
         this.player = new Player();
+        this.player = new Player();
+        this.player.setGameCore(this); // Give player a reference to GameCore
         this.gameState = new GameState();
+        this.gameSettings = { SCORE_INTERVAL: 1000 }; // Example, if not already defined
         
         // Managers
         this.inputManager = null;
@@ -32,6 +68,7 @@ export class GameCore {
         this.treasureMapManager = null;
         this.weaponManager = null;
         this.effectsManager = null;
+        this.lobbyManager = null; // Added LobbyManager instance
         
         /* @tweakable multiplayer player rendering system */
         this.otherPlayers = new Map(); // Store other player 3D representations
@@ -64,44 +101,85 @@ export class GameCore {
     }
     
     async init() {
-        this.uiManager = new UIManager(this);
+        this.uiManager = new UIManager(this); // UIManager needs gameCore for callbacks
         this.audioManager = new AudioManager();
-        this.networkManager = new NetworkManager(this);
+        this.networkManager = new NetworkManager(this); // NetworkManager needs gameCore
+        this.lobbyManager = new LobbyManager(this); // LobbyManager needs gameCore (for other managers)
         
         this.uiManager.showLoadingScreen();
         
-        await this.initializeGraphics();
+        await this.initializeGraphics(); // Basic graphics for loading screen
         await this.audioManager.initialize();
-        await this.networkManager.initialize();
+        await this.networkManager.initialize(); // Connect to network
         
-        this.inputManager = new InputManager(this);
-        this.consoleManager = new ConsoleManager(this);
+        this.inputManager = new InputManager(this); // InputManager needs gameCore
+        this.consoleManager = new ConsoleManager(this); // ConsoleManager needs gameCore
+
+        // Initialization of LobbyManager AFTER other core managers it depends on (NM, UIM)
+        this.lobbyManager.initialize();
         
         setTimeout(() => {
             this.uiManager.hideLoadingScreen();
-            this.uiManager.showMainMenu();
+            this.uiManager.showMainMenu(); // Show main menu first
+            // Lobby screen will be shown when 'Join Game' is clicked (handled in UIManager)
         }, 3000);
     }
-    
-    startGame() {
-        /* @tweakable game start sequence timing and flow */
-        this.gameState.isGameStarted = true;
+
+    // Called by UIManager when 'Join Game' on main menu is clicked (now transitions to lobby)
+    // Or directly if we skip main menu for dev
+    transitionToLobby() {
         this.uiManager.hideMainMenu();
-        this.uiManager.showGameUI();
+        this.uiManager.showLobbyScreen();
+        if (this.lobbyManager) {
+            this.lobbyManager.requestFullLobbyStateSync(); // Ensure lobby UI is up-to-date
+        }
+    }
+
+    // This method will be called by LobbyManager when all players are ready
+    startGameFromLobby() {
+        if (this.gameState.isGameStarted) return; // Prevent multiple starts
+
+        this.gameState.isGameStarted = true;
+        this.uiManager.hideLobbyScreen(); // Hide lobby
+
+        // Set Chaos Influencer in GameState
+        if (this.lobbyManager) {
+            this.gameState.chaosInfluencerId = this.lobbyManager.chaosInfluencer;
+            console.log("Starting game. Chaos Influencer is: ", this.gameState.chaosInfluencerId);
+        } else {
+            this.gameState.chaosInfluencerId = null;
+            console.log("Starting game. LobbyManager not available, Chaos Influencer is null.");
+        }
+
+        this.uiManager.showGameUI();     // Show main game interface
         
-        // Set initial team assignment
-        /* @tweakable team assignment logic for game balance */
-        const teamCount = Object.values(this.networkManager.room?.presence || {}).length;
-        this.player.team = teamCount % 2 === 0 ? 'alpha' : 'beta';
+        // Player setup based on lobby choices
+        const localPlayerId = this.lobbyManager.getPlayerId();
+        const localPlayerLobbyData = this.lobbyManager.lobbyPlayers[localPlayerId];
+
+        let selectedClass = 'assault'; // Default
+        if (localPlayerLobbyData) {
+            if (localPlayerLobbyData.teamColor) {
+                if (localPlayerLobbyData.teamColor === 'blue') this.player.team = 'alpha';
+                else if (localPlayerLobbyData.teamColor === 'red') this.player.team = 'beta';
+                else {
+                    const teamKeys = Object.keys(this.networkManager.room?.peers || {});
+                    const playerIndex = teamKeys.indexOf(localPlayerId);
+                    this.player.team = playerIndex >= 0 && playerIndex % 2 === 0 ? 'alpha' : 'beta';
+                }
+            }
+            selectedClass = localPlayerLobbyData.playerClass || 'assault';
+        } else {
+            const teamCount = Object.values(this.networkManager.room?.presence || {}).length;
+            this.player.team = teamCount % 2 === 0 ? 'alpha' : 'beta';
+        }
+        this.player.setClass(selectedClass); // Set class, which also sets health, weapon type, ammo
         
-        // Update UI with team info
+        // UI Updates reflect the class changes made by player.setClass
         this.uiManager.updateScoreDisplay();
-        this.uiManager.updateHealthDisplay();
-        this.uiManager.updateAmmoDisplay();
         this.uiManager.updateCorruptionDisplay();
         
-        // Start respawn player at team base
-        this.respawnPlayer();
+        this.respawnPlayer(true); // Pass true for initial spawn
         
         // Request pointer lock for FPS controls
         this.requestPointerLock();
@@ -114,15 +192,26 @@ export class GameCore {
         
         // Sync initial presence
         this.networkManager.updatePresence(this.player.getPresenceData());
+
+        // Spawn initial fragment - ideally, only one client (e.g., host) should do this.
+        // For now, let first client (or any client if state is managed well) do it.
+        // FragmentManager.spawnInitialFragment will call updateFragmentOnNetwork.
+        if (this.fragmentManager) {
+            this.fragmentManager.spawnInitialFragment();
+        }
     }
     
     restartGame() {
         /* @tweakable game restart behavior */
         this.gameState.reset();
-        this.player.respawn();
-        this.fragmentManager.createFragment('center_fragment', { x: 0, y: 5, z: 0 });
+        this.player.respawn(); // Resets health, ammo etc.
+        if (this.fragmentManager) {
+            this.fragmentManager.createFragment('center_fragment', { x: 0, y: 5, z: 0 });
+        }
         this.uiManager.hideGameOver();
-        this.startGame();
+        // Instead of startGame(), should probably go back to Main Menu or Lobby
+        this.uiManager.showMainMenu();
+        // Or: this.transitionToLobby();
     }
     
     endGame(winningTeam) {
@@ -402,6 +491,14 @@ export class GameCore {
         const playerData = this.otherPlayers.get(playerId);
         if (!playerData) return;
         
+        // Store class and maxHealth if present in presence update
+        if (presence.playerClass) {
+            playerData.playerClass = presence.playerClass;
+        }
+        if (presence.maxHealth) {
+            playerData.maxHealth = presence.maxHealth;
+        }
+
         const { mesh, healthBar, weaponIndicator, teamRing } = playerData;
         
         // Update position with enhanced interpolation
@@ -421,7 +518,8 @@ export class GameCore {
         
         // Update health bar with enhanced visibility
         if (presence.health !== undefined) {
-            const healthPercent = Math.max(0.05, presence.health / 100); // Minimum visibility
+            const maxHealth = playerData.maxHealth || 100; // Use stored maxHealth or default
+            const healthPercent = Math.max(0.05, presence.health / maxHealth);
             healthBar.scale.x = healthPercent;
             
             // Enhanced color coding based on health
@@ -503,51 +601,70 @@ export class GameCore {
         playerData.lastUpdate = Date.now();
     }
     
-    handleShoot() {
-        const shotResults = this.weaponManager.shoot();
-        if (!shotResults) return;
-        
-        this.uiManager.updateAmmoDisplay();
-        
-        // Process each shot result (for shotguns)
-        shotResults.forEach(shotResult => {
-            if (shotResult.intersects.length > 0) {
-                const hit = shotResult.intersects[0];
-                this.handleHit(hit, shotResult.damage);
-                
-                // Create hit effect at impact point
-                this.effectsManager.createHitEffect(hit.point);
-                
-                // Check if we hit another player
-                const hitObject = hit.object;
-                if (hitObject.userData.playerId && hitObject.userData.playerId !== this.networkManager.room.clientId) {
-                    let damage = shotResult.damage;
-                    
-                    // Apply damage boost if active
-                    if (this.playerBuffs.damageBoost.active) {
-                        /* @tweakable damage boost multiplier for corruption pool buff */
-                        damage *= 1.5;
-                    }
-                    
-                    this.networkManager.room.requestPresenceUpdate(hitObject.userData.playerId, {
-                        type: 'damage',
-                        amount: damage
-                    });
-                    
-                    this.uiManager.addKillFeedEntry(`Hit ${this.networkManager.room.peers[hitObject.userData.playerId]?.username || 'Unknown'}`);
-                }
+    getCollidableEntities() {
+        let collidables = [];
+        // Add other player meshes
+        this.otherPlayers.forEach(playerData => {
+            if (playerData.mesh && playerData.mesh.visible) { // Ensure mesh exists and is visible
+                collidables.push(playerData.mesh);
             }
         });
+        // Add environment meshes (assuming environment object has a way to provide them)
+        if (this.environment && this.environment.collidableMeshes) {
+            collidables = collidables.concat(this.environment.collidableMeshes);
+        }
+        // Add any other specific collidable entities like interactive objects, etc.
+        return collidables;
+    }
+
+    handleShoot() {
+        if (!this.weaponManager || !this.camera || !this.player || this.player.isDead) return;
+
+        const weaponConfig = this.player.getWeaponConfig();
+        if (!weaponConfig) {
+            console.error("Player has no weapon config for type:", this.player.weaponType);
+            return;
+        }
+
+        const now = Date.now();
+        if (now < this.player.lastShotTime + weaponConfig.fireRate) {
+            // console.log("Fire rate too high");
+            return;
+        }
+
+        if (this.player.ammo <= 0) {
+            this.audioManager.playSound('empty', this.player.position);
+            return;
+        }
         
-        this.addCorruption(0.5);
+        // For non-automatic weapons, ensure it's a new click
+        // This requires InputManager to track mouseDown state or click events.
+        // Assuming InputManager.controls.shoot is true for mousedown, false for mouseup for semi-auto.
+        // For simplicity here, we'll assume if it's not auto, one call to handleShoot is one shot.
+        // A more robust solution would be in InputManager.
+        if (!weaponConfig.auto && this.inputManager.wasShootingLastFrame && this.inputManager.controls.shoot) {
+            // console.log("Semi-auto: waiting for next click");
+            // this.inputManager.wasShootingLastFrame = true; // Set this in InputManager
+            return;
+        }
+
+
+        this.player.shoot(); // Decrements ammo, UIManager.updateAmmoDisplay is called within Player.resetAmmo or setClass
+        this.player.lastShotTime = now; // Update player's last shot time for fire rate
+
+        const cameraWorldDirection = this.camera.getWorldDirection(new THREE.Vector3());
+        const cameraWorldPosition = this.camera.getWorldPosition(new THREE.Vector3());
         
-        this.networkManager.send({
-            type: 'player_shot',
-            playerId: this.networkManager.room.clientId,
-            position: this.player.position.toArray(),
-            direction: this.camera.getWorldDirection(new THREE.Vector3()).toArray(),
-            weaponType: this.player.weaponType
-        });
+        this.weaponManager.shoot(cameraWorldDirection, cameraWorldPosition); // weaponManager.shoot handles raycasting, effects, and network messages
+        
+        this.addCorruption(0.1); // Reduced corruption per shot, can be per-weapon
+        this.networkManager.updatePresence(this.player.getPresenceData()); // Sync ammo, lastShotTime
+        
+        // if (this.inputManager.controls.shoot && !weaponConfig.auto) {
+        //    this.inputManager.wasShootingLastFrame = true; // For InputManager to manage semi-auto
+        // } else {
+        //    this.inputManager.wasShootingLastFrame = false;
+        // }
     }
     
     handleReload() {
@@ -903,31 +1020,58 @@ export class GameCore {
     }
     
     handlePlayerDeath(killerId) {
+        this.player.isDead = true; // Mark as dead
         this.uiManager.addKillFeedEntry(`You were eliminated by ${this.networkManager.room.peers[killerId]?.username || 'Unknown'}`);
         
         if (this.player.hasFragment) {
-            // Drop fragment at current position when killed
-            const dropPos = this.player.dropFragment();
-            this.fragmentManager.createFragment('center_fragment', dropPos);
-            
-            // Network sync fragment drop
-            this.networkManager.send({
-                type: 'fragment_dropped',
-                playerId: this.networkManager.room.clientId,
-                position: dropPos.toArray()
-            });
+            this.player.dropFragment(); // This now calls fragmentManager.dropFragment and updates network
         }
         
+        // Update presence immediately to reflect dead state if necessary
+        this.networkManager.updatePresence(this.player.getPresenceData());
+
+        const RESPAWN_DELAY = 3000; // 3 seconds
         setTimeout(() => {
             this.respawnPlayer();
-        }, 3000);
+        }, RESPAWN_DELAY);
     }
     
-    respawnPlayer() {
-        this.player.respawn();
-        this.uiManager.updateHealthDisplay();
-        this.uiManager.hideFragmentIndicator();
-        
+    respawnPlayer(initialSpawn = false) {
+        let spawnPoint;
+        if (this.player.team === 'alpha') {
+            spawnPoint = TEAM_ALPHA_SPAWN_POINTS[alphaSpawnIndex % TEAM_ALPHA_SPAWN_POINTS.length];
+            alphaSpawnIndex++;
+        } else if (this.player.team === 'beta') {
+            spawnPoint = TEAM_BETA_SPAWN_POINTS[betaSpawnIndex % TEAM_BETA_SPAWN_POINTS.length];
+            betaSpawnIndex++;
+        } else {
+            // Fallback spawn point if team is not set (should not happen in normal flow)
+            console.warn(`Player team not set for respawn. Defaulting to a generic spawn.`);
+            spawnPoint = { x: 0, y: 10, z: 0, facing: 0 };
+        }
+
+        // The Player.spawnAt method should handle resetting health, ammo, position, rotation etc.
+        this.player.spawnAt(spawnPoint.x, spawnPoint.y, spawnPoint.z, spawnPoint.facing);
+
+        // Update camera to player's new position and orientation
+        // Player.spawnAt should ideally set the this.player.position and this.player.rotation (or cameraHolder rotation)
+        // The game loop's camera update logic (player.updateMovement) will then use these.
+        // If direct camera manipulation is needed here:
+        if (this.camera) {
+            this.camera.position.set(spawnPoint.x, spawnPoint.y + this.player.cameraHeight, spawnPoint.z); // Adjust for camera height
+            // For rotation, usually the player's rotation is updated, and camera follows.
+            // If Player.spawnAt updates player's rotation correctly, this might not be needed.
+        }
+
+
+        if (!initialSpawn) { // Don't show "Respawned" message on initial game start
+            this.uiManager.addKillFeedEntry("Respawned!");
+        }
+        this.uiManager.updateHealthDisplay(); // Reflects reset health
+        this.uiManager.updateAmmoDisplay();   // Reflects reset ammo
+        this.uiManager.hideFragmentIndicator(); // Should not have fragment on respawn
+
+        // Important: Update presence so other players see the respawn (new position, alive state, health)
         this.networkManager.updatePresence(this.player.getPresenceData());
     }
     
@@ -941,7 +1085,7 @@ export class GameCore {
         this.player.updateMovement(this.inputManager.controls, this.camera, deltaTime);
         this.fragmentManager.animateFragment(currentTime / 1000);
         
-        // Update multiplayer player rendering
+        // Update multiplayer player rendering (this calls updatePlayerModel)
         this.updateOtherPlayers();
         
         // Update weapon recoil
@@ -954,10 +1098,12 @@ export class GameCore {
             this.environment.updateCooldowns(deltaTime);
         }
         
-        this.checkFragmentPickup();
+        // this.checkFragmentPickup(); // Old direct check, replaced by interaction prompt system
+        this.handleFragmentInteractionSetup(); // Check if player can pick up fragment and UIManager shows prompt
         this.checkTreasureMapInteractions();
-        this.checkMidMatchObjectives();
-        this.updateScoring(deltaTime);
+        this.checkMidMatchObjectives(); // This also contains generic interaction logic
+        // this.updateScoring(deltaTime); // Old direct fragment scoring, replaced by updateScoreOverTime
+        this.updateScoreOverTime(deltaTime); // New time-based scoring logic
         this.checkFragmentRespawn();
         this.updateChaosEvents(deltaTime, Date.now());
         
@@ -967,10 +1113,21 @@ export class GameCore {
         requestAnimationFrame(() => this.gameLoop());
     }
     
-    checkFragmentPickup() {
-        if (!this.player.hasFragment && this.fragmentManager.checkFragmentPickup(this.player.position)) {
-            this.collectFragment();
+    // checkFragmentPickup() { // Replaced by handleFragmentInteractionSetup and player.collectFragment() via input
+    //     if (!this.player.hasFragment && this.fragmentManager.getTouchingFragmentId(this.player.position)) {
+    //         // Now handled by player pressing 'F' when UIManager shows prompt
+    //         // this.player.collectFragment(); // This was the old direct collection
+    //     }
+    // }
+
+    handleFragmentInteractionSetup() {
+        if (!this.player.hasFragment && this.player.canCollectFragment && this.player.currentTouchingFragmentId) {
+            if (this.uiManager) this.uiManager.showInteractionPrompt(`Press [F] to collect Fragment`);
+        } else if (!this.player.canCollectFragment && !this.treasureMapManager?.checkInteractions(this.player.position, this.networkManager?.room?.clientId, this.player.team)?.available) {
+            // Hide prompt only if no other interaction (like treasure map) is available
+            if (this.uiManager) this.uiManager.hideInteractionPrompt();
         }
+        // If treasure map interaction is available, its prompt will be shown by checkTreasureMapInteractions
     }
     
     checkFragmentRespawn() {
@@ -989,17 +1146,73 @@ export class GameCore {
     checkTreasureMapInteractions() {
         if (!this.treasureMapManager) return;
         
-        const interaction = this.treasureMapManager.checkInteractions(
+        const treasureInteraction = this.treasureMapManager.checkInteractions(
             this.player.position,
-            this.networkManager.room.clientId,
+            this.networkManager.room?.clientId,
             this.player.team
         );
         
-        if (interaction && interaction.available) {
-            this.uiManager.showTreasureMapInteraction(interaction.type);
-        } else {
-            this.uiManager.hideTreasureMapInteraction();
+        if (treasureInteraction && treasureInteraction.available) {
+            this.uiManager.showTreasureMapInteraction(treasureInteraction.type);
+        } else if (!this.player.canCollectFragment) {
+            // Only hide if fragment interaction is also not available
+            this.uiManager.hideTreasureMapInteraction(); // This might conflict if fragment prompt is also active
+                                                       // The logic in handleFragmentInteractionSetup tries to manage this.
         }
+    }
+
+    // Centralized interaction handler called by InputManager on 'F' key press
+    handleInteraction() {
+        // 1. Prioritize Treasure Map Interaction if available
+        if (this.treasureMapManager) {
+            const treasureInteraction = this.treasureMapManager.checkInteractions(
+                this.player.position,
+                this.networkManager.room.clientId,
+                this.player.team
+            );
+            if (treasureInteraction && treasureInteraction.available) {
+                if (treasureInteraction.type === 'treasure_map_pickup') {
+                    const success = this.treasureMapManager.pickupTreasureMap(
+                        this.networkManager.room.clientId, this.player.team
+                    );
+                    if (success) {
+                        this.uiManager.showTreasureMapAcquired();
+                        this.uiManager.hideTreasureMapInteraction();
+                        this.audioManager.playSound('collect'); // Or a specific map sound
+                        return; // Interaction handled
+                    }
+                } else if (treasureInteraction.type === 'hidden_doorway') {
+                    const success = this.treasureMapManager.activateRemembranceEvent(
+                        this.networkManager.room.clientId, this.player.team
+                    );
+                    if (success) {
+                        this.uiManager.activateRemembranceEffect(this.player.team);
+                        this.uiManager.hideTreasureMapInteraction();
+                        this.uiManager.hideTreasureMapStatus();
+                        this.audioManager.playSound('remembrance');
+                        return; // Interaction handled
+                    }
+                }
+            }
+        }
+
+        // 2. Then, try Fragment Collection
+        if (this.player.canCollectFragment && this.player.currentTouchingFragmentId) {
+            if (this.player.collectFragment()) { // collectFragment now handles network updates via FragmentManager
+                this.audioManager.playSound('collect');
+                // UIManager prompt will be hidden automatically as canCollectFragment becomes false
+                return; // Interaction handled
+            }
+        }
+
+        // 3. Then, other interactions like Glitch Vents, Corruption Pools (from checkMidMatchObjectives)
+        // These are currently checked and handled within checkMidMatchObjectives based on input state.
+        // For a unified 'F' key, their logic would also need to be callable from here.
+        // For now, their existing input check within their own methods might still work if InputManager sets a flag.
+        // To make it truly sequential, checkMidMatchObjectives might need to return what it tried to do.
+        // For simplicity, let's assume checkMidMatchObjectives handles its own input for now.
+
+        console.log("No specific interaction found for 'F' key press at this moment.");
     }
     
     animate() {
@@ -1031,5 +1244,161 @@ export class GameCore {
     
     checkWinCondition() {
         return this.gameState.checkWinCondition();
+    }
+
+    updateScoreOverTime(deltaTime) {
+        if (!this.gameState.isGameStarted || !this.networkManager || !this.networkManager.room || !this.fragmentManager) {
+            return;
+        }
+
+        // Determine who is responsible for scoring logic
+        let isScoringClient = false;
+        const clientId = this.networkManager.room.clientId;
+
+        if (this.gameState.chaosInfluencerId) {
+            isScoringClient = (clientId === this.gameState.chaosInfluencerId);
+        } else {
+            // Fallback: client with the lowest ID is responsible
+            const peers = this.networkManager.room.peers || {};
+            let lowestId = clientId; // Start with own ID
+            for (const peerId in peers) {
+                if (peerId < lowestId) {
+                    lowestId = peerId;
+                }
+            }
+            isScoringClient = (clientId === lowestId);
+        }
+
+        if (!isScoringClient) {
+            return; // This client is not responsible for calculating scores
+        }
+
+        const fragmentState = this.fragmentManager.getFragmentState('center_fragment');
+
+        if (fragmentState && fragmentState.isCollected && fragmentState.carrierId) {
+            const carrierPresence = this.networkManager.room.presence[fragmentState.carrierId];
+
+            if (carrierPresence && !carrierPresence.isDead) { // Ensure carrier is alive
+                const carrierPosition = carrierPresence.position; // Expected to be {x,y,z} or [x,y,z]
+                const carrierTeam = carrierPresence.team;
+
+                const isCarrierInAlphaBase = distanceSquared(carrierPosition, TEAM_ALPHA_BASE_CENTER) < BASE_RADIUS_SQUARED;
+                const isCarrierInBetaBase = distanceSquared(carrierPosition, TEAM_BETA_BASE_CENTER) < BASE_RADIUS_SQUARED;
+
+                let pointsPerSecond = 0;
+                let teamToScore = null;
+
+                if (carrierTeam === 'alpha') {
+                    if (isCarrierInAlphaBase) { pointsPerSecond = 3; teamToScore = 'alpha'; }
+                    else if (isCarrierInBetaBase) { pointsPerSecond = 1; teamToScore = 'alpha'; }
+                } else if (carrierTeam === 'beta') {
+                    if (isCarrierInBetaBase) { pointsPerSecond = 3; teamToScore = 'beta'; }
+                    else if (isCarrierInAlphaBase) { pointsPerSecond = 1; teamToScore = 'beta'; }
+                }
+
+                if (pointsPerSecond > 0 && teamToScore) {
+                    const dtSeconds = deltaTime; // Assuming deltaTime from gameLoop is already in seconds. If in ms, divide by 1000.
+                                               // The existing gameLoop passes (currentTime - lastTime) / 1000, so it is in seconds.
+
+                    if (teamToScore === 'alpha') {
+                        this.gameState.alphaScoreAccumulator += pointsPerSecond * dtSeconds;
+                        if (this.gameState.alphaScoreAccumulator >= SCORE_INTERVAL_SECONDS) {
+                            const scoreUnits = Math.floor(this.gameState.alphaScoreAccumulator / SCORE_INTERVAL_SECONDS);
+                            this.gameState.scoreAlpha += scoreUnits;
+                            this.gameState.alphaScoreAccumulator -= scoreUnits * SCORE_INTERVAL_SECONDS;
+                            this.networkManager.updateRoomState({ scoreAlpha: this.gameState.scoreAlpha });
+                            // UIManager update will happen when this client receives the roomState update via subscription
+                        }
+                    } else if (teamToScore === 'beta') {
+                        this.gameState.betaScoreAccumulator += pointsPerSecond * dtSeconds;
+                        if (this.gameState.betaScoreAccumulator >= SCORE_INTERVAL_SECONDS) {
+                            const scoreUnits = Math.floor(this.gameState.betaScoreAccumulator / SCORE_INTERVAL_SECONDS);
+                            this.gameState.scoreBeta += scoreUnits;
+                            this.gameState.betaScoreAccumulator -= scoreUnits * SCORE_INTERVAL_SECONDS;
+                            this.networkManager.updateRoomState({ scoreBeta: this.gameState.scoreBeta });
+                        }
+                    }
+                     // Check for win condition after score update by the responsible client
+                    const winner = this.gameState.checkWinCondition();
+                    if (winner) {
+                        this.endGame(winner);
+                        // Optionally send a specific "game_over" message if not handled by score limits alone
+                        // this.networkManager.send({ type: 'game_over', winningTeam: winner });
+                    }
+                }
+            }
+        }
+
+        // Fragment Ping Logic (still inside if(isScoringClient) block)
+        if (fragmentState && fragmentState.isCollected && fragmentState.carrierId) {
+            const deltaTimeMs = deltaTime * 1000; // Convert deltaTime (seconds) to milliseconds
+
+            // Ping Accumulator
+            fragmentState.pingAccumulator = (fragmentState.pingAccumulator || 0) + deltaTimeMs;
+            if (fragmentState.pingAccumulator >= fragmentState.PING_INTERVAL) {
+                fragmentState.pingAccumulator = 0;
+                const carrierPresence = this.networkManager.room.presence[fragmentState.carrierId];
+                if (carrierPresence && carrierPresence.position && !carrierPresence.isDead) {
+                    const positionToSend = Array.isArray(carrierPresence.position)
+                        ? carrierPresence.position
+                        : [carrierPresence.position.x, carrierPresence.position.y, carrierPresence.position.z];
+                    this.networkManager.sendFragmentPingAlert(fragmentState.carrierId, positionToSend);
+                }
+            }
+
+            // Overheat Mode Logic
+            fragmentState.continuousHoldTime = (fragmentState.continuousHoldTime || 0) + deltaTimeMs;
+            // Update the fragment state in FragmentManager to persist continuousHoldTime
+            // This ensures that even if this client stops being the authoritative one, the next one has the correct continuousHoldTime.
+            // We only need to send the specific field that changed if updateFragmentState supports partial updates.
+            // Otherwise, send the whole state (which might be safer if structure of fragmentState is complex).
+            // For now, let's assume a targeted update or that fragmentState is a reference that gets updated.
+            // A more robust way: this.fragmentManager.incrementContinuousHoldTime(fragmentState.id, deltaTimeMs);
+            // For this step, direct update and then network sync via updateFragmentState.
+            this.fragmentManager.updateFragmentState(fragmentState.id, { continuousHoldTime: fragmentState.continuousHoldTime });
+
+
+            if (fragmentState.continuousHoldTime >= fragmentState.OVERHEAT_THRESHOLD && !this.gameState.isOverheatModeActive) {
+                this.gameState.isOverheatModeActive = true;
+                this.networkManager.updateRoomState({ isOverheatModeActive: true });
+                if(this.effectsManager) this.effectsManager.startOverheatVisualGlitches();
+                // Initialize timers for the first effects
+                this.gameState.nextOverheatExplosionTime = this.gameState.gameTime * 1000 + (Math.random() * 5000 + 2000); // gameTime is in sec
+                this.gameState.nextHallucinationTime = this.gameState.gameTime * 1000 + (Math.random() * 10000 + 5000);
+                console.log("OVERHEAT MODE ACTIVATED");
+            }
+        } else { // Fragment is not collected or no carrier
+            if (this.gameState.isOverheatModeActive) {
+                this.gameState.isOverheatModeActive = false;
+                this.networkManager.updateRoomState({ isOverheatModeActive: false });
+                 if(this.effectsManager) this.effectsManager.stopOverheatVisualGlitches();
+                console.log("OVERHEAT MODE DEACTIVATED");
+            }
+        }
+
+        // Overheat Effects Triggering (still inside if(isScoringClient) block)
+        if (this.gameState.isOverheatModeActive) {
+            const currentTimeMs = this.gameState.gameTime * 1000; // gameTime is in seconds
+
+            // Random Explosions
+            if (currentTimeMs >= this.gameState.nextOverheatExplosionTime) {
+                const randomX = (Math.random() - 0.5) * 100; // Example map bounds
+                const randomZ = (Math.random() - 0.5) * 100;
+                const randomPosition = [randomX, 2, randomZ]; // Assuming y=2 is groundish
+                this.networkManager.sendOverheatEffect({ effectType: 'explosion', position: randomPosition });
+                this.gameState.nextOverheatExplosionTime = currentTimeMs + (Math.random() * 8000 + 3000); // Next one in 3-11s
+            }
+
+            // Hallucinated Enemies
+            if (currentTimeMs >= this.gameState.nextHallucinationTime) {
+                const randomX = (Math.random() - 0.5) * 80;
+                const randomZ = (Math.random() - 0.5) * 80;
+                const randomPosition = [randomX, 1, randomZ]; // Hallucinations can be at player height
+                const enemyTypes = ['ghost_jellyfish', 'shadow_figure', 'creepy_krab']; // Example types
+                const randomEnemyType = enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
+                this.networkManager.sendOverheatEffect({ effectType: 'hallucination', position: randomPosition, enemyType: randomEnemyType });
+                this.gameState.nextHallucinationTime = currentTimeMs + (Math.random() * 15000 + 8000); // Next one in 8-23s
+            }
+        }
     }
 }

@@ -5,6 +5,12 @@ export class GameState {
         this.corruptionLevel = 0;
         this.scoreAlpha = 0;
         this.scoreBeta = 0;
+        this.alphaScoreAccumulator = 0; // For time-based scoring
+        this.betaScoreAccumulator = 0;  // For time-based scoring
+        this.chaosInfluencerId = null;  // ID of the current Chaos Influencer
+        this.isOverheatModeActive = false; // Added for Overheat Mode
+        this.nextOverheatExplosionTime = 0; // For GameCore to manage timing
+        this.nextHallucinationTime = 0;   // For GameCore to manage timing
         this.gameTime = 0;
         /* @tweakable score needed to win the game */
         this.winScore = 50;
@@ -15,9 +21,17 @@ export class GameState {
         this.corruptionLevel = 0;
         this.scoreAlpha = 0;
         this.scoreBeta = 0;
+        this.alphaScoreAccumulator = 0;
+        this.betaScoreAccumulator = 0;
+        // this.chaosInfluencerId = null; // Should persist or be reset based on game flow, typically reset with lobby
+        this.isOverheatModeActive = false; // Reset Overheat Mode
+        this.nextOverheatExplosionTime = 0;
+        this.nextHallucinationTime = 0;
         this.gameTime = 0;
     }
     
+    // addScore is kept as direct score addition is still used for some events,
+    // but time-based scoring will use accumulators.
     addScore(team, points) {
         if (team === 'alpha') {
             this.scoreAlpha += points;

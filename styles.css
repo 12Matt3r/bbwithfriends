@@ -426,6 +426,357 @@ body {
     animation: pulse 1s infinite;
 }
 
+/* General Game Notification */
+#game-notification {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: rgba(0, 0, 0, 0.8);
+    color: var(--secondary-color);
+    padding: 1rem 2rem;
+    border: 2px solid var(--secondary-color);
+    border-radius: 5px;
+    z-index: 1000; /* Ensure it's on top of other UI */
+    font-size: 1.2rem;
+    text-align: center;
+    box-shadow: 0 0 15px var(--secondary-color);
+    animation: fadeInOut 3s ease-in-out;
+}
+
+@keyframes fadeInOut {
+    0%, 100% { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+    10%, 90% { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* Lobby Screen */
+#lobby-screen {
+    background: rgba(0, 0, 0, 0.95); /* Slightly more opaque than other screens */
+}
+
+.lobby-title {
+    margin-bottom: 2rem;
+    font-size: 3rem; /* Slightly smaller than main menu */
+}
+
+.lobby-content {
+    display: flex;
+    justify-content: space-around;
+    width: 80%;
+    max-width: 1200px;
+    gap: 2rem;
+    color: var(--primary-color);
+}
+
+.lobby-players,
+.lobby-controls,
+.lobby-chat {
+    background: rgba(0, 20, 40, 0.5);
+    border: 2px solid var(--primary-color);
+    padding: 1.5rem;
+    flex: 1;
+    min-width: 250px; /* Ensure readability on smaller flex layouts */
+}
+
+.lobby-players h2,
+.lobby-controls h2,
+.lobby-chat h2 {
+    font-size: 1.5rem;
+    margin-bottom: 1rem;
+    text-align: center;
+    color: var(--secondary-color);
+    text-shadow: 0 0 5px var(--secondary-color);
+}
+
+#lobby-player-list {
+    list-style: none;
+    padding: 0;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+#lobby-player-list li {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid rgba(0, 170, 255, 0.3);
+    font-size: 0.9rem;
+}
+
+#lobby-player-list li:last-child {
+    border-bottom: none;
+}
+
+.control-group {
+    margin-bottom: 1rem;
+}
+
+.control-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+}
+
+.control-group select {
+    width: 100%;
+    padding: 0.5rem;
+    background: #002244;
+    border: 1px solid var(--primary-color);
+    color: var(--primary-color);
+    font-family: 'Orbitron', monospace;
+    font-size: 0.9rem;
+}
+
+.lobby-btn {
+    background: linear-gradient(45deg, #005588, #0099dd);
+    border: 2px solid var(--primary-color);
+    color: var(--primary-color);
+    padding: 0.75rem 1.5rem;
+    font-family: 'Orbitron', monospace;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-transform: uppercase;
+    width: 100%;
+    margin-top: 1rem;
+}
+
+.lobby-btn:hover {
+    background: linear-gradient(45deg, #0099dd, #00ccff);
+    box-shadow: 0 0 15px var(--primary-color);
+    transform: translateY(-2px);
+}
+
+#ready-button.ready {
+    background: linear-gradient(45deg, var(--secondary-color), #ffd700);
+    color: #002244;
+    border-color: var(--secondary-color);
+}
+#ready-button.ready:hover {
+    box-shadow: 0 0 15px var(--secondary-color);
+}
+
+
+#chat-messages {
+    height: 200px;
+    overflow-y: auto;
+    border: 1px solid rgba(0, 170, 255, 0.3);
+    padding: 0.5rem;
+    margin-bottom: 1rem;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    background: rgba(0,0,0,0.2);
+}
+
+.chat-message {
+    margin-bottom: 0.5rem;
+}
+
+.chat-message .player-name {
+    font-weight: bold;
+    color: var(--secondary-color);
+}
+
+.chat-input {
+    display: flex;
+    gap: 0.5rem;
+}
+
+#chat-input-field {
+    flex: 1;
+    padding: 0.5rem;
+    background: #002244;
+    border: 1px solid var(--primary-color);
+    color: var(--primary-color);
+    font-family: 'Orbitron', monospace;
+    font-size: 0.8rem;
+}
+
+#send-chat-button {
+    background: #005588;
+    border: 1px solid var(--primary-color);
+    color: var(--primary-color);
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    font-family: 'Orbitron', monospace;
+    transition: background 0.3s ease;
+}
+
+#send-chat-button:hover {
+    background: #0077aa;
+}
+
+/* Responsive adjustments for lobby */
+@media (max-width: 900px) {
+    .lobby-content {
+        flex-direction: column;
+        width: 90%;
+    }
+    .lobby-players,
+    .lobby-controls,
+    .lobby-chat,
+    .lobby-chaos-vote { /* Added chaos vote to responsive stacking */
+        min-width: initial; /* Reset min-width for stacked layout */
+    }
+    .lobby-title {
+        font-size: 2.5rem;
+    }
+}
+
+@media (max-width: 600px) {
+    .lobby-title {
+        font-size: 2rem;
+    }
+    .lobby-players h2,
+    .lobby-controls h2,
+    .lobby-chat h2 {
+        font-size: 1.2rem;
+    }
+    .lobby-btn,
+    .control-group select,
+    #chat-input-field,
+    #send-chat-button {
+        font-size: 0.8rem;
+    }
+    #chat-messages {
+        height: 150px;
+    }
+}
+
+/* Chaos Influencer Voting Styles */
+.lobby-chaos-vote {
+    background: rgba(10, 0, 30, 0.5); /* Dark purple tint */
+    border: 2px solid var(--secondary-color); /* Gold border to stand out */
+    padding: 1.5rem;
+    flex: 1;
+    min-width: 250px;
+    display: flex;
+    flex-direction: column;
+}
+
+.lobby-chaos-vote h2 {
+    font-size: 1.5rem;
+    margin-bottom: 0.5rem;
+    text-align: center;
+    color: var(--secondary-color); /* Gold title */
+    text-shadow: 0 0 8px var(--secondary-color);
+}
+
+.lobby-chaos-vote p {
+    font-size: 0.8rem;
+    text-align: center;
+    margin-bottom: 1rem;
+    color: var(--primary-color);
+    opacity: 0.9;
+    line-height: 1.3;
+}
+
+#chaos-vote-list {
+    list-style: none;
+    padding: 0;
+    max-height: 250px; /* Adjust as needed */
+    overflow-y: auto;
+    margin-bottom: 1rem;
+}
+
+#chaos-vote-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.6rem 0.5rem;
+    border-bottom: 1px solid rgba(255, 221, 0, 0.3); /* Faint gold lines */
+    font-size: 0.9rem;
+}
+
+#chaos-vote-list li:last-child {
+    border-bottom: none;
+}
+
+#chaos-vote-list .vote-count {
+    font-weight: bold;
+    color: var(--secondary-color);
+    margin-left: 0.5rem;
+    margin-right: 0.5rem;
+    min-width: 20px; /* For alignment */
+    text-align: right;
+}
+
+#chaos-vote-list .vote-button {
+    background: linear-gradient(45deg, var(--secondary-color), #ffae00);
+    border: 1px solid #ffdd00;
+    color: #330033; /* Dark purple text */
+    padding: 0.3rem 0.7rem;
+    font-family: 'Orbitron', monospace;
+    font-size: 0.75rem;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-transform: uppercase;
+}
+
+#chaos-vote-list .vote-button:hover {
+    background: linear-gradient(45deg, #ffae00, #ffdd00);
+    box-shadow: 0 0 10px #ffdd00;
+    transform: scale(1.05);
+}
+
+#chaos-vote-list .vote-button:disabled {
+    background: #555;
+    border-color: #777;
+    color: #999;
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+#chaos-influencer-display {
+    margin-top: auto; /* Pushes to the bottom if list is short */
+    padding: 0.75rem;
+    text-align: center;
+    font-size: 1rem;
+    font-weight: bold;
+    color: var(--primary-color);
+    background: rgba(255, 221, 0, 0.1); /* Faint gold background */
+    border-top: 2px solid var(--secondary-color);
+}
+
+#chaos-influencer-display .influencer-name {
+    color: var(--secondary-color);
+    text-shadow: 0 0 5px var(--secondary-color);
+}
+
+/* Class Selection in Lobby */
+#class-selection-buttons {
+    display: flex;
+    justify-content: space-around; /* Or space-between */
+    gap: 0.5rem; /* Spacing between buttons */
+    margin-top: 0.5rem;
+}
+
+.class-select-button {
+    flex: 1; /* Make buttons take equal width */
+    padding: 0.6rem 0.5rem;
+    font-size: 0.8rem;
+    font-weight: bold;
+    background-color: #003355;
+    border: 1px solid var(--primary-color);
+    color: var(--primary-color);
+    cursor: pointer;
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
+    text-transform: uppercase;
+}
+
+.class-select-button:hover {
+    background-color: #005588;
+    box-shadow: 0 0 8px var(--primary-color);
+}
+
+.class-select-button.selected {
+    background-color: var(--secondary-color);
+    color: #001122; /* Dark text on light button */
+    border-color: #ffcc00;
+    box-shadow: 0 0 12px var(--secondary-color);
+}
+
+
 .fragment-text {
     font-size: 1.2rem;
     font-weight: 700;
@@ -589,27 +940,36 @@ body {
 }
 
 /* Kill Feed */
-#kill-feed {
+#kill-feed { /* This is the container */
     position: absolute;
-    top: 6rem;
-    right: 2rem;
-    width: 300px;
-    pointer-events: none;
+    top: 1rem; /* Adjusted from 6rem to be higher */
+    right: 1rem; /* Adjusted for consistency */
+    width: 280px; /* Slightly narrower */
+    max-height: 150px; /* Limit height, allow scroll or fade */
+    overflow: hidden; /* Hide messages that overflow if not scrolling */
+    display: flex;
+    flex-direction: column-reverse; /* New messages appear at bottom and push old ones up */
+    pointer-events: none; /* Container itself isn't interactive */
 }
 
-.kill-entry {
-    background: rgba(0, 0, 0, 0.7);
-    border: 1px solid #333;
-    padding: 0.5rem;
-    margin-bottom: 0.25rem;
-    font-size: 0.8rem;
-    animation: slideIn 0.3s ease;
+.kill-feed-message {
+    background-color: rgba(10, 0, 20, 0.6); /* Darker, slightly purple background */
+    color: #e0e0e0; /* Light grey text */
+    padding: 6px 10px;
+    margin-top: 4px; /* Use margin-top since flex-direction is column-reverse */
+    border-radius: 3px;
+    font-size: 0.75rem; /* Slightly smaller */
+    border-left: 3px solid var(--secondary-color); /* Accent border */
+    opacity: 1;
+    transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+    transform: translateX(0);
 }
 
-@keyframes slideIn {
-    from { transform: translateX(100%); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
+.kill-feed-message.fade-out {
+    opacity: 0;
+    transform: translateX(20px); /* Slide out to the right */
 }
+/* Removed old .kill-entry and @keyframes slideIn as new system is different */
 
 /* Player List */
 #player-list {

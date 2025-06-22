@@ -1,348 +1,302 @@
 import * as THREE from 'three';
 
+const FRAGMENT_DEFAULT_SPAWN_POS = { x: 0, y: 1, z: 0 };
+
 export class FragmentManager {
-    constructor(scene, room) {
+    constructor(scene, gameCore) { // gameCore passed for networkManager access
         this.scene = scene;
-        this.room = room;
-        this.fragment = null;
-        this.fragments = []; // Initialize fragments array
-        this.centerPosition = { x: 0, y: 5, z: 0 }; // Center of map for CTF
+        this.gameCore = gameCore; // Store gameCore reference
         
-        // Volatile fragment mechanics
-        /* @tweakable fragment auto-return timer in seconds */
-        this.autoReturnTimer = 60;
-        this.fragmentPickupTime = 0;
-        this.isFragmentVolatile = false;
+        this.fragmentMeshes = {}; // Stores THREE.Mesh objects, keyed by fragmentId
+        this.fragmentStates = {}; // Stores state data: { id, position, isCollected, carrierId, isVolatile, pickupTime }
+                                 // This is the source of truth, synced with network.
+
+        this.centerPosition = { ...FRAGMENT_DEFAULT_SPAWN_POS };
+        this.autoReturnTimer = 60; // Default, can be per-fragment if needed
+    }
+
+    spawnInitialFragment() {
+        const id = 'center_fragment';
+        const pos = this.centerPosition;
+        
+        // Only spawn if it doesn't exist or isn't already considered "active" (not collected)
+        if (!this.fragmentStates[id] || this.fragmentStates[id].isCollected) {
+            this.fragmentStates[id] = {
+                id: id,
+                position: { ...pos },
+                isCollected: false,
+                carrierId: null,
+                isVolatile: false,
+                pickupTime: 0,
+                pingAccumulator: 0, // Initialize ping accumulator
+                PING_INTERVAL: 20000, // Default ping interval in ms
+                continuousHoldTime: 0, // For Overheat Mode
+                OVERHEAT_THRESHOLD: 100000 // 100 seconds, e.g.
+            };
+            this.createFragmentMesh(id, pos); // Create mesh
+            // Announce its existence and state
+            this.updateFragmentOnNetwork(id);
+        } else if (!this.fragmentMeshes[id] && !this.fragmentStates[id].isCollected) {
+            // State exists but mesh doesn't - e.g. after a client reconnects
+            this.createFragmentMesh(id, this.fragmentStates[id].position);
+        }
     }
     
-    generateFragments() {
-        const fragmentPositions = [
-            { x: 0, y: 5, z: 0 },
-            { x: 25, y: 5, z: -25 },
-            { x: -25, y: 5, z: 25 },
-            { x: 15, y: 5, z: 15 },
-            { x: -15, y: 5, z: -15 },
-            { x: 35, y: 8, z: 0 },
-            { x: -35, y: 8, z: 0 },
-            { x: 0, y: 8, z: 35 },
-            { x: 0, y: 8, z: -35 }
-        ];
-        
-        fragmentPositions.forEach((pos, index) => {
-            this.createFragment(`fragment_${index}`, pos);
-        });
-    }
-    
-    generateFragment() {
-        this.createFragment('center_fragment', this.centerPosition);
-    }
-    
-    createFragment(id, position) {
-        // Remove existing fragment with same ID first
-        this.fragments = this.fragments.filter(fragment => {
-            if (fragment.userData && fragment.userData.id === id) {
-                this.scene.remove(fragment);
-                return false;
-            }
-            return true;
-        });
-        
-        // Create new fragment with enhanced volatile appearance
-        const geometry = new THREE.OctahedronGeometry(1.5);
+    createFragmentMesh(id, position) {
+        if (this.fragmentMeshes[id]) {
+            this.scene.remove(this.fragmentMeshes[id]);
+            // delete this.fragmentMeshes[id]; // No, keep it for re-use if needed, just ensure removed from scene
+        }
+
+        const geometry = new THREE.OctahedronGeometry(1.0); // Slightly smaller for easier pickup
         const material = new THREE.MeshStandardMaterial({
-            color: 0xffdd00,
-            metalness: 0.9,
-            roughness: 0.1,
-            transparent: true,
-            opacity: 0.9,
-            emissive: 0xffdd00,
-            emissiveIntensity: 0.5
+            color: 0xffdd00, metalness: 0.8, roughness: 0.2,
+            emissive: 0xccaa00, emissiveIntensity: 0.6,
+            transparent: true, opacity: 0.95
         });
         
-        const fragment = new THREE.Mesh(geometry, material);
-        fragment.position.set(position.x, position.y, position.z);
-        fragment.userData = { id, isFragment: true, volatile: false };
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.position.set(position.x, position.y, position.z);
+        mesh.userData = { id, isFragment: true }; // Basic userData
         
-        // Add enhanced floating animation with corruption effects
-        const originalY = position.y;
-        fragment.userData.animate = (time, isVolatile = false) => {
-            fragment.position.y = originalY + Math.sin(time * 2) * 0.5;
-            fragment.rotation.y = time * 0.5;
-            fragment.rotation.x = Math.sin(time) * 0.2;
-            
-            // Volatile fragment effects
-            if (isVolatile) {
-                /* @tweakable volatile fragment visual intensity */
-                const volatileIntensity = 2.0;
-                fragment.material.emissiveIntensity = 0.5 + Math.sin(time * 5) * 0.3 * volatileIntensity;
-                fragment.scale.setScalar(1 + Math.sin(time * 3) * 0.1 * volatileIntensity);
-                
-                // Add pulsing corruption color
-                const corruptionColor = new THREE.Color().lerpColors(
-                    new THREE.Color(0xffdd00),
-                    new THREE.Color(0xff0000),
-                    (Math.sin(time * 4) + 1) * 0.5
-                );
-                fragment.material.emissive.copy(corruptionColor);
-            }
-        };
-        
-        this.scene.add(fragment);
-        
-        // Set as the main fragment if it's the center fragment
-        if (id === 'center_fragment') {
-            this.fragment = fragment;
-            this.fragmentPickupTime = 0;
-            this.isFragmentVolatile = false;
+        this.scene.add(mesh);
+        this.fragmentMeshes[id] = mesh;
+    }
+
+    updateFragmentState(id, newState) {
+        if (!this.fragmentStates[id]) {
+            // Ensure new fragments also get ping properties
+            this.fragmentStates[id] = {
+                id,
+                position: {...FRAGMENT_DEFAULT_SPAWN_POS},
+                isCollected: false, carrierId: null,
+                isVolatile: false, pickupTime: 0,
+                pingAccumulator: 0, PING_INTERVAL: 20000,
+                continuousHoldTime: 0, OVERHEAT_THRESHOLD: 100000
+            };
         }
         
-        // Add to fragments array
-        this.fragments.push(fragment);
+        // Preserve existing pingAccumulator and continuousHoldTime unless newState explicitly provides them
+        const existingPingAccumulator = this.fragmentStates[id].pingAccumulator;
+        const existingContinuousHoldTime = this.fragmentStates[id].continuousHoldTime;
+
+        Object.assign(this.fragmentStates[id], newState);
+
+        if (newState.pingAccumulator === undefined) {
+            this.fragmentStates[id].pingAccumulator = existingPingAccumulator;
+        }
+        if (newState.continuousHoldTime === undefined) {
+            this.fragmentStates[id].continuousHoldTime = existingContinuousHoldTime;
+        }
         
-        // Update room state
-        if (this.room) {
-            this.room.updateRoomState({
-                fragment: {
-                    x: position.x,
-                    y: position.y,
-                    z: position.z,
-                    active: true,
-                    id: id,
-                    volatile: false
+        const state = this.fragmentStates[id];
+        const mesh = this.fragmentMeshes[id];
+
+        if (state.isCollected) {
+            if (mesh) mesh.visible = false;
+            state.pickupTime = state.pickupTime || Date.now(); // Set pickup time if not already set
+            // continuousHoldTime will be incremented by GameCore's authoritative logic
+            // pingAccumulator also handled by GameCore authoritative logic or reset in newState
+        } else { // Not collected (dropped or spawned)
+            state.pickupTime = 0;
+            state.isVolatile = false; // Reset volatile on drop/spawn
+            state.pingAccumulator = 0; // Reset ping accumulator
+            state.continuousHoldTime = 0; // Reset continuous hold time
+            if (state.position) {
+                if (!mesh) {
+                    this.createFragmentMesh(id, state.position);
+                } else {
+                    mesh.position.set(state.position.x, state.position.y, state.position.z);
+                    mesh.visible = true;
                 }
-            });
+            } else if (mesh) { // No position but should be visible (e.g. initial state)
+                 mesh.visible = true; // May need a default position if state.position is null
+            }
         }
+        this.updateFragmentOnNetwork(id);
     }
     
-    removeFragment(id = 'center_fragment') {
-        let removedFragment = null;
-        
-        this.fragments = this.fragments.filter(fragment => {
-            if (fragment.userData && fragment.userData.id === id) {
-                this.scene.remove(fragment);
-                removedFragment = fragment;
-                return false;
-            }
-            return true;
-        });
-        
-        // Clear main fragment reference if it was the center fragment
-        if (id === 'center_fragment') {
-            this.fragment = null;
+    updateFragmentOnNetwork(id) {
+        if (this.gameCore.networkManager && this.fragmentStates[id]) {
+             this.gameCore.networkManager.updateRoomStateFragment(id, this.fragmentStates[id]);
         }
-        
-        if (removedFragment) {
-            // Update room state
-            if (this.room) {
-                this.room.updateRoomState({
-                    fragment: {
-                        active: false,
-                        id: id
-                    }
-                });
-            }
+    }
+
+    collectFragment(id, playerId) {
+        const state = this.getFragmentState(id);
+        if (state && !state.isCollected) {
+            // Reset continuousHoldTime on fresh pickup
+            this.updateFragmentState(id, {
+                isCollected: true, carrierId: playerId, position: null,
+                pickupTime: Date.now(), continuousHoldTime: 0
+            });
             return true;
         }
         return false;
     }
-    
-    updateFragments(roomFragments = {}) {
-        if (!roomFragments || typeof roomFragments !== 'object') {
+
+    dropFragment(id, dropPosition) {
+        const state = this.getFragmentState(id);
+        if (state && state.isCollected) { // Can only drop if collected
+            this.updateFragmentState(id, {
+                isCollected: false, carrierId: null, position: dropPosition,
+                isVolatile: false, pickupTime: 0, pingAccumulator: 0, continuousHoldTime: 0 // Reset relevant timers
+            });
+            return true;
+        }
+        if (!state && dropPosition) { // Fragment doesn't exist in state yet, treat as new spawn (e.g. initial forced by admin)
+             this.updateFragmentState(id, {
+                isCollected: false, carrierId: null, position: dropPosition,
+                isVolatile: false, pickupTime: 0, pingAccumulator: 0, continuousHoldTime: 0
+            });
+            return true;
+        }
+        return false;
+    }
+
+    getFragmentState(id) {
+        return this.fragmentStates[id] || null;
+    }
+
+    updateFragmentsFromNetwork(networkFragmentStates) {
+        if (!networkFragmentStates || typeof networkFragmentStates !== 'object') {
             return;
         }
-        
-        this.fragments = this.fragments.filter(fragment => {
-            // Check if fragment has proper userData and id
-            if (!fragment.userData || !fragment.userData.id) {
-                return true; // Keep fragments without proper ID for now
+
+        for (const id in networkFragmentStates) {
+            const netState = networkFragmentStates[id];
+            let localState = this.fragmentStates[id];
+
+            if (!localState) {
+                this.fragmentStates[id] = { ...netState }; // Create local state if new
+                localState = this.fragmentStates[id];
+            } else {
+                Object.assign(localState, netState); // Update existing local state
             }
             
-            const id = fragment.userData.id;
-            const fragmentData = roomFragments[id];
-            
-            if (!fragmentData || !fragmentData.active) {
-                this.scene.remove(fragment);
-                // Clear main fragment reference if needed
-                if (id === 'center_fragment') {
-                    this.fragment = null;
+            const mesh = this.fragmentMeshes[id];
+            if (!localState.isCollected && localState.position) {
+                if (!mesh) {
+                    this.createFragmentMesh(id, localState.position);
+                } else {
+                    mesh.position.set(localState.position.x, localState.position.y, localState.position.z);
+                    mesh.visible = true;
                 }
-                return false;
+            } else if (mesh) { // Is collected or no position
+                mesh.visible = false;
             }
-            return true;
-        });
-    }
-    
-    makeFragmentVolatile() {
-        if (this.fragment) {
-            this.isFragmentVolatile = true;
-            this.fragment.userData.volatile = true;
-            
-            // Enhanced volatile effects
-            /* @tweakable volatile fragment warning threshold in seconds */
-            const volatileWarningTime = 45;
-            /* @tweakable volatile fragment explosion time in seconds */
-            const explosionTime = 75;
-            
-            // Start pulsing corruption effects
-            this.startVolatileEffects();
-            
-            // Update room state
-            if (this.room) {
-                this.room.updateRoomState({
-                    fragment: {
-                        volatile: true,
-                        autoReturnTime: Date.now() + (this.autoReturnTimer * 1000),
-                        explosionTime: Date.now() + (explosionTime * 1000)
-                    }
-                });
+        }
+
+        // Optional: Remove local fragments no longer in network state
+        for (const localId in this.fragmentStates) {
+            if (!networkFragmentStates[localId]) {
+                if (this.fragmentMeshes[localId]) {
+                    this.scene.remove(this.fragmentMeshes[localId]);
+                    delete this.fragmentMeshes[localId];
+                }
+                delete this.fragmentStates[localId];
             }
         }
     }
     
-    startVolatileEffects() {
-        if (!this.fragment) return;
-        
-        /* @tweakable volatile fragment pulse frequency */
-        const pulseFrequency = 0.1; // seconds between pulses
-        let lastPulseTime = 0;
-        
-        const volatileEffect = () => {
-            if (!this.isFragmentVolatile || !this.fragment) return;
-            
-            const now = Date.now();
-            if (now - lastPulseTime > pulseFrequency * 1000) {
-                // Create expanding corruption ring
-                this.createCorruptionPulse(this.fragment.position);
-                lastPulseTime = now;
-            }
-            
-            requestAnimationFrame(volatileEffect);
-        };
-        volatileEffect();
+    makeFragmentVolatile(id) {
+        const state = this.getFragmentState(id);
+        if (state && state.isCollected && !state.isVolatile) {
+            this.updateFragmentState(id, { isVolatile: true });
+            // Visual effects on carrier/UI are handled elsewhere based on this state.
+            console.log(`Fragment ${id} is now volatile.`);
+        }
     }
     
+    // createCorruptionPulse remains largely the same, used for visual feedback.
+    // Might be triggered by UIManager or GameCore based on fragment state.
     createCorruptionPulse(position) {
-        /* @tweakable corruption pulse visual properties */
         const pulseRadius = 3;
-        const pulseLifetime = 1000; // milliseconds
-        
+        const pulseLifetime = 1000;
         const ringGeometry = new THREE.RingGeometry(0, pulseRadius, 16);
         const ringMaterial = new THREE.MeshBasicMaterial({
-            color: 0xff0000,
-            transparent: true,
-            opacity: 0.5,
-            side: THREE.DoubleSide
+            color: 0xff0000, transparent: true, opacity: 0.5, side: THREE.DoubleSide
         });
-        
         const pulse = new THREE.Mesh(ringGeometry, ringMaterial);
         pulse.position.copy(position);
         pulse.rotation.x = Math.PI / 2;
         
         if (this.scene) {
             this.scene.add(pulse);
-            
             const startTime = Date.now();
             const animate = () => {
                 const elapsed = Date.now() - startTime;
                 const progress = elapsed / pulseLifetime;
-                
-                if (progress >= 1) {
-                    this.scene.remove(pulse);
-                    return;
-                }
-                
+                if (progress >= 1) { this.scene.remove(pulse); return; }
                 pulse.scale.setScalar(1 + progress * 2);
                 pulse.material.opacity = 0.5 * (1 - progress);
-                
                 requestAnimationFrame(animate);
             };
             animate();
         }
     }
     
-    checkAutoReturn(currentTime) {
-        if (this.fragmentPickupTime > 0) {
-            const holdTime = (currentTime - this.fragmentPickupTime) / 1000;
-            
-            // Make fragment volatile after timer
-            if (holdTime > this.autoReturnTimer && !this.isFragmentVolatile) {
-                this.makeFragmentVolatile();
-                return 'volatile';
+    checkAutoReturn(id, currentTime) {
+        const state = this.getFragmentState(id);
+        if (state && state.isCollected && state.pickupTime > 0) {
+            const holdTime = (currentTime - state.pickupTime) / 1000;
+
+            if (holdTime > this.autoReturnTimer && !state.isVolatile) {
+                this.makeFragmentVolatile(id);
+                return 'volatile'; // Inform GameCore to show UI warning
             }
-            
-            // Auto-return if corruption reaches 100%
-            /* @tweakable corruption threshold for fragment auto-return */
-            const corruptionThreshold = 100;
-            if (holdTime > this.autoReturnTimer * 1.5) {
-                return 'auto_return';
+            if (state.isVolatile && holdTime > this.autoReturnTimer + 30) { // Example: 30s after becoming volatile
+                return 'auto_return'; // Inform GameCore to force return
             }
         }
-        
         return null;
     }
     
-    forceFragmentReturn() {
-        // Force fragment to return to center
-        this.createFragment('center_fragment', this.centerPosition);
-        this.fragmentPickupTime = 0;
-        this.isFragmentVolatile = false;
+    forceFragmentReturn(id) {
+        const state = this.getFragmentState(id);
+        if (state) {
+            // Drop fragment at center, this updates state and network
+            this.dropFragment(id, this.centerPosition);
+            if(this.gameCore && this.gameCore.uiManager) {
+                 this.gameCore.uiManager.addKillFeedEntry(`Fragment ${id.replace('_', ' ')} auto-returned!`);
+            }
+        }
+    }
         
-        if (this.room) {
-            this.room.updateRoomState({
-                fragment: {
-                    x: this.centerPosition.x,
-                    y: this.centerPosition.y,
-                    z: this.centerPosition.z,
-                    active: true,
-                    id: 'center_fragment',
-                    volatile: false,
-                    autoReturned: true
+    animateActiveFragments(time) {
+        for (const id in this.fragmentStates) {
+            const state = this.fragmentStates[id];
+            const mesh = this.fragmentMeshes[id];
+            if (mesh && !state.isCollected && mesh.visible) {
+                const basePosY = state.position?.y || this.centerPosition.y;
+                mesh.position.y = basePosY + Math.sin(time * 2 + mesh.uuid.substring(0,4).charCodeAt(0) * 0.1) * 0.25; // Use part of uuid for offset
+                mesh.rotation.y = time * 0.3 + mesh.uuid.substring(0,4).charCodeAt(1) * 0.1;
+
+                if (state.isVolatile) {
+                    mesh.material.emissiveIntensity = 0.5 + Math.sin(time * 10) * 0.5;
+                    const scaleFactor = 1 + Math.sin(time * 6) * 0.1;
+                    mesh.scale.set(scaleFactor, scaleFactor, scaleFactor);
+                } else {
+                     mesh.material.emissiveIntensity = 0.6;
+                     mesh.scale.set(1,1,1);
                 }
-            });
-        }
-    }
-    
-    setFragmentPickupTime(time) {
-        this.fragmentPickupTime = time;
-    }
-    
-    animateFragments(time) {
-        this.fragments.forEach(fragment => {
-            if (fragment.userData.animate) {
-                fragment.userData.animate(time, fragment.userData.volatile);
             }
-        });
-    }
-    
-    respawnFragment() {
-        if (!this.fragment) {
-            this.createFragment('center_fragment', this.centerPosition);
         }
     }
     
-    updateFragment(roomFragment = null) {
-        if (roomFragment && !roomFragment.active && this.fragment) {
-            this.removeFragment('center_fragment');
-        }
-    }
-    
-    animateFragment(time) {
-        if (this.fragment && this.fragment.userData.animate) {
-            this.fragment.userData.animate(time, this.fragment.userData.volatile);
-        }
-        
-        // Also animate all fragments for consistency
-        this.fragments.forEach(fragment => {
-            if (fragment.userData.animate) {
-                fragment.userData.animate(time, fragment.userData.volatile);
+    getTouchingFragmentId(playerPosition, pickupRadius = 1.5) { // Reduced radius for more precise pickup
+        for (const id in this.fragmentStates) {
+            const state = this.fragmentStates[id];
+            const mesh = this.fragmentMeshes[id];
+            if (mesh && !state.isCollected && mesh.visible) {
+                // Ensure mesh position is up-to-date if it's animated separately from state.position
+                // For simplicity, we assume mesh.position is the authoritative visual position.
+                const distance = playerPosition.distanceTo(mesh.position);
+                if (distance < pickupRadius) {
+                    return id;
+                }
             }
-        });
-    }
-    
-    checkFragmentPickup(playerPosition, pickupRadius = 2) {
-        if (!this.fragment) return false;
-        
-        const distance = playerPosition.distanceTo(this.fragment.position);
-        return distance < 2;
+        }
+        return null;
     }
 }

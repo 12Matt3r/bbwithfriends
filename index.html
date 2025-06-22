@@ -40,6 +40,69 @@
             </div>
         </div>
 
+        <!-- Lobby Screen -->
+        <div id="lobby-screen" class="screen hidden">
+            <div class="lobby-title glitch-text" data-text="PREPARE FOR CHAOS">PREPARE FOR CHAOS</div>
+            <div class="lobby-content">
+                <div class="lobby-players">
+                    <h2>PLAYERS</h2>
+                    <ul id="lobby-player-list">
+                        <!-- Player items will be added here by UIManager.js -->
+                    </ul>
+                </div>
+                <div class="lobby-controls">
+                    <h2>CUSTOMIZE</h2>
+                    <div class="control-group">
+                        <label for="avatar-select">Avatar:</label>
+                        <select id="avatar-select">
+                            <option value="spongebob">SpongeBob</option>
+                            <option value="patrick">Patrick</option>
+                            <option value="squidward">Squidward</option>
+                            <option value="sandy">Sandy</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="team-color-select">Team Color:</label>
+                        <select id="team-color-select">
+                            <option value="blue">Blue</option>
+                            <option value="red">Red</option>
+                            <option value="green">Green</option>
+                            <option value="yellow">Yellow</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label>Class:</label>
+                        <div id="class-selection-buttons">
+                            <button class="class-select-button selected" data-class="assault">Assault</button>
+                            <button class="class-select-button" data-class="scout">Scout</button>
+                            <button class="class-select-button" data-class="heavy">Heavy</button>
+                        </div>
+                    </div>
+                    <button id="ready-button" class="lobby-btn">Ready</button>
+                </div>
+                <div class="lobby-chat">
+                    <h2>CHAT</h2>
+                    <div id="chat-messages">
+                        <!-- Chat messages will appear here -->
+                    </div>
+                    <div class="chat-input">
+                        <input type="text" id="chat-input-field" placeholder="Type a message...">
+                        <button id="send-chat-button">Send</button>
+                    </div>
+                </div>
+                <div class="lobby-chaos-vote">
+                    <h2>VOTE FOR CHAOS INFLUENCER</h2>
+                    <p>The player with the most votes will gain special advantages during chaos events!</p>
+                    <ul id="chaos-vote-list">
+                        <!-- Vote items will be added here by UIManager.js -->
+                    </ul>
+                    <div id="chaos-influencer-display" class="hidden">
+                        Current Chaos Influencer: <span id="chaos-influencer-name">None</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Game UI -->
         <div id="game-ui" class="hidden">
             <!-- HUD -->
