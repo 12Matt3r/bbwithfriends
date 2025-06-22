@@ -12,6 +12,8 @@ import { WeaponManager } from './WeaponManager.js';
 import { GameState } from './GameState.js';
 import { EffectsManager } from './EffectsManager.js';
 import { LobbyManager } from './LobbyManager.js'; // Added LobbyManager import
+import { StreamerDataManager } from './StreamerDataManager.js';
+import { MatchStatsManager } from './MatchStatsManager.js';
 
 // Define spawn points globally or at a scope accessible by relevant methods
 const TEAM_ALPHA_SPAWN_POINTS = [
@@ -52,10 +54,12 @@ export class GameCore {
         this.renderer = null;
         
         this.player = new Player();
-        this.player = new Player();
         this.player.setGameCore(this); // Give player a reference to GameCore
         this.gameState = new GameState();
-        this.gameSettings = { SCORE_INTERVAL: 1000 }; // Example, if not already defined
+        this.gameSettings = {
+            SCORE_INTERVAL: 1000,
+            fragmentCorruptionRadius: 7 // Added fragment corruption radius
+        };
         
         // Managers
         this.inputManager = null;
@@ -69,6 +73,8 @@ export class GameCore {
         this.weaponManager = null;
         this.effectsManager = null;
         this.lobbyManager = null; // Added LobbyManager instance
+        this.streamerDataManager = null;
+        this.matchStatsManager = null;
         
         /* @tweakable multiplayer player rendering system */
         this.otherPlayers = new Map(); // Store other player 3D representations
@@ -96,6 +102,13 @@ export class GameCore {
             fastReload: { active: false, endTime: 0 },
             damageBoost: { active: false, endTime: 0 }
         };
+
+        // Confessional Booth Zones (Example Data)
+        this.confessionalBoothZones = [
+            { id: 'booth_kelp_forest', center: new THREE.Vector3(-20, 1.5, -15), radius: 2.5 },
+            { id: 'booth_jellyfish_fields', center: new THREE.Vector3(15, 1.5, 20), radius: 2.5 },
+            { id: 'booth_goo_lagoon', center: new THREE.Vector3(30, 1.5, -5), radius: 2 }
+        ];
         
         this.init();
     }
@@ -108,12 +121,21 @@ export class GameCore {
         
         this.uiManager.showLoadingScreen();
         
-        await this.initializeGraphics(); // Basic graphics for loading screen
-        await this.audioManager.initialize();
+        await this.initializeGraphics(); // Camera is created here
+        // Initialize AudioManager with the camera AFTER the camera is created
+        if (this.camera && this.audioManager && typeof this.audioManager.initialize === 'function') {
+            await this.audioManager.initialize(this.camera);
+        } else {
+            console.error("GameCore: Failed to initialize AudioManager with camera. Camera or AudioManager not ready.");
+            // Fallback or alternative initialization if needed, though camera is crucial for positional audio
+            await this.audioManager.initialize(); // Attempt basic init if camera isn't there
+        }
         await this.networkManager.initialize(); // Connect to network
-        
+
         this.inputManager = new InputManager(this); // InputManager needs gameCore
         this.consoleManager = new ConsoleManager(this); // ConsoleManager needs gameCore
+        this.streamerDataManager = new StreamerDataManager(this); // Instantiate StreamerDataManager
+        this.matchStatsManager = new MatchStatsManager(this); // Instantiate MatchStatsManager
 
         // Initialization of LobbyManager AFTER other core managers it depends on (NM, UIM)
         this.lobbyManager.initialize();
@@ -174,7 +196,7 @@ export class GameCore {
             this.player.team = teamCount % 2 === 0 ? 'alpha' : 'beta';
         }
         this.player.setClass(selectedClass); // Set class, which also sets health, weapon type, ammo
-        
+
         // UI Updates reflect the class changes made by player.setClass
         this.uiManager.updateScoreDisplay();
         this.uiManager.updateCorruptionDisplay();
@@ -204,30 +226,66 @@ export class GameCore {
     restartGame() {
         /* @tweakable game restart behavior */
         this.gameState.reset();
+        if(this.effectsManager) this.effectsManager.stopAllTerrainCorruption(); // Stop corruption effects
         this.player.respawn(); // Resets health, ammo etc.
         if (this.fragmentManager) {
-            this.fragmentManager.createFragment('center_fragment', { x: 0, y: 5, z: 0 });
+            // Ensure initial fragment is reset/spawned correctly, potentially removing old one
+            this.fragmentManager.spawnInitialFragment();
         }
         this.uiManager.hideGameOver();
-        // Instead of startGame(), should probably go back to Main Menu or Lobby
         this.uiManager.showMainMenu();
-        // Or: this.transitionToLobby();
     }
     
     endGame(winningTeam) {
         /* @tweakable end game sequence and victory conditions */
         this.gameState.isGameStarted = false;
+        if(this.effectsManager) this.effectsManager.stopAllTerrainCorruption(); // Stop corruption effects
         
         if (document.exitPointerLock) {
             document.exitPointerLock();
         }
         
-        this.uiManager.showGameOver(winningTeam, this.player.team, this.gameState.corruptionLevel);
+        this.uiManager.showGameOver(winningTeam, this.player.team, this.gameState.corruptionLevel); // This shows a simple game over message
+
+        // Finalize local player's fragment hold time if they are holding it
+        if (this.player.hasFragment && this.player.currentFragmentSessionStartTime > 0 && this.gameState) {
+            const holdDuration = this.gameState.gameTime - this.player.currentFragmentSessionStartTime;
+            this.player.totalTimeHoldingFragment += holdDuration;
+            this.player.currentFragmentSessionStartTime = 0;
+            // Note: We are not actually making the player drop the fragment here in terms of game mechanics,
+            // just finalizing their stats as if the holding session ended now.
+        }
         
-        // Reset game state for potential restart
-        this.gameState.reset();
+        if (this.matchStatsManager) {
+            const reasonText = winningTeam === "Corruption" ? "Corruption reached critical levels" : (winningTeam ? `Team ${winningTeam} wins` : "Unknown reason");
+            this.matchStatsManager.addTimelineEvent(`Match Ended. ${reasonText}`, "game-end");
+            this.matchStatsManager.compilePlayerStats();
+            this.matchStatsManager.calculateSummaryStats();
+
+            if (this.uiManager && typeof this.uiManager.showMatchSummaryScreen === 'function') {
+                 // Ensure screenshot is taken before UI changes for summary screen
+                try {
+                    this.endGameScreenshotDataUrl = this.renderer.domElement.toDataURL('image/png');
+                } catch (e) {
+                    console.error("Error taking screenshot:", e);
+                    this.endGameScreenshotDataUrl = null;
+                }
+                this.uiManager.showMatchSummaryScreen(this.gameState.matchStats, this.gameState.confessionalLogs);
+            } else {
+                console.warn("UIManager.showMatchSummaryScreen() not available.");
+            }
+        }
+
+        // this.gameState.reset(); // Reset is called by UIManager when player clicks "Play Again" or similar from summary/gameover screen
+                               // Or, if summary screen is modal ON TOP of game over, then reset happens after summary.
+                               // For now, let's assume Game Over screen handles the actual game state reset trigger.
+                               // The current showGameOver doesn't reset, restartGame does. endGame should ensure no new game actions.
     }
     
+    getEndGameScreenshotDataUrl() {
+        return this.endGameScreenshotDataUrl;
+    }
+
     async initializeGraphics() {
         const canvas = document.getElementById('game-canvas');
         
@@ -473,10 +531,19 @@ export class GameCore {
         });
         
         // Remove disconnected players
-        for (const [playerId, playerData] of this.otherPlayers.entries()) {
+        for (const [playerId, playerObject] of this.otherPlayers.entries()) {
             if (!currentPlayers.has(playerId)) {
                 console.log(`Removing disconnected player ${playerId}`);
-                this.scene.remove(playerData.mesh);
+                if (playerObject.mesh) this.scene.remove(playerObject.mesh);
+
+                // Clean up speaking indicator and sound for disconnected player
+                if (this.effectsManager && typeof this.effectsManager.setPlayerSpeakingIndicator === 'function') {
+                    this.effectsManager.setPlayerSpeakingIndicator(playerId, false, null);
+                }
+                if (this.audioManager && typeof this.audioManager.setPlayerSpatialTalkingSound === 'function') {
+                    this.audioManager.setPlayerSpatialTalkingSound(playerId, false, null);
+                }
+
                 this.otherPlayers.delete(playerId);
             }
         }
@@ -488,18 +555,32 @@ export class GameCore {
     }
     
     updatePlayerModel(playerId, presence) {
-        const playerData = this.otherPlayers.get(playerId);
-        if (!playerData) return;
+        const playerObject = this.otherPlayers.get(playerId);
+        if (!playerObject) return;
         
         // Store class and maxHealth if present in presence update
         if (presence.playerClass) {
-            playerData.playerClass = presence.playerClass;
+            playerObject.playerClass = presence.playerClass;
         }
         if (presence.maxHealth) {
-            playerData.maxHealth = presence.maxHealth;
+            playerObject.maxHealth = presence.maxHealth;
         }
 
-        const { mesh, healthBar, weaponIndicator, teamRing } = playerData;
+        // Handle speaking indicator update
+        const oldIsSpeaking = playerObject.isSpeaking; // Store previous state
+        playerObject.isSpeaking = !!presence.isSpeaking; // Update to new state, ensuring boolean
+
+        if (playerObject.isSpeaking !== oldIsSpeaking && playerObject.mesh) { // If state changed and mesh exists
+            if (this.effectsManager && typeof this.effectsManager.setPlayerSpeakingIndicator === 'function') {
+                this.effectsManager.setPlayerSpeakingIndicator(playerId, playerObject.isSpeaking, playerObject.mesh);
+            }
+            if (this.audioManager && typeof this.audioManager.setPlayerSpatialTalkingSound === 'function') {
+                this.audioManager.setPlayerSpatialTalkingSound(playerId, playerObject.isSpeaking, playerObject.mesh);
+            }
+        }
+
+
+        const { mesh, healthBar, weaponIndicator, teamRing } = playerObject;
         
         // Update position with enhanced interpolation
         if (presence.position) {
@@ -518,7 +599,7 @@ export class GameCore {
         
         // Update health bar with enhanced visibility
         if (presence.health !== undefined) {
-            const maxHealth = playerData.maxHealth || 100; // Use stored maxHealth or default
+            const maxHealth = playerObject.maxHealth || 100; // Use stored maxHealth from playerObject
             const healthPercent = Math.max(0.05, presence.health / maxHealth);
             healthBar.scale.x = healthPercent;
             
@@ -598,7 +679,7 @@ export class GameCore {
             }
         }
         
-        playerData.lastUpdate = Date.now();
+        playerObject.lastUpdate = Date.now();
     }
     
     getCollidableEntities() {
@@ -1020,14 +1101,50 @@ export class GameCore {
     }
     
     handlePlayerDeath(killerId) {
-        this.player.isDead = true; // Mark as dead
-        this.uiManager.addKillFeedEntry(`You were eliminated by ${this.networkManager.room.peers[killerId]?.username || 'Unknown'}`);
-        
-        if (this.player.hasFragment) {
-            this.player.dropFragment(); // This now calls fragmentManager.dropFragment and updates network
+        // This method is called when the local player dies.
+        // killerId is passed from Player.takeDamage, which got it from a network message or local event.
+
+        // const victimName = this.player.username || this.player.getPlayerId(); // Use username if available
+        // Safely get username from local player's presence data if available, or fallback
+        const localPlayerPresence = this.networkManager?.room?.presence[this.player.getPlayerId()] || {};
+        const victimName = localPlayerPresence.username || this.player.getPlayerId();
+
+        let killerName = "The Environment"; // Default killer
+        let killingWeapon = "Unknown";
+
+        if (killerId) {
+            if (killerId === this.player.getPlayerId()) {
+                killerName = victimName; // Self-elimination
+            } else if (this.networkManager.room && this.networkManager.room.presence[killerId]) {
+                killerName = this.networkManager.room.presence[killerId].username || killerId;
+            }
+            // Attempt to get weapon from player's lastDamageInfo
+            if (this.player.lastDamageInfo && this.player.lastDamageInfo.attackerId === killerId) {
+                killingWeapon = this.player.lastDamageInfo.weapon || "Unknown";
+            }
         }
         
-        // Update presence immediately to reflect dead state if necessary
+        // Send the elimination message to all clients (including self)
+        if (this.networkManager) {
+            this.networkManager.sendPlayerEliminated(victimName, killerName, killingWeapon);
+        } else {
+            // If no network, show locally for single player testing
+            this.uiManager.addKillFeedEntry(killerName, victimName, killingWeapon);
+        }
+        // Add streamer event for player elimination
+        if (this.streamerDataManager && typeof this.streamerDataManager.addStreamerEvent === 'function') {
+            this.streamerDataManager.addStreamerEvent(`${killerName} eliminated ${victimName} with ${killingWeapon}`);
+        }
+        // Add match stats timeline event
+        if (this.matchStatsManager && typeof this.matchStatsManager.addTimelineEvent === 'function') {
+            this.matchStatsManager.addTimelineEvent(`${killerName} eliminated ${victimName} with ${killingWeapon}`, "elimination");
+        }
+
+
+        if (this.player.hasFragment) {
+            this.player.dropFragment();
+        }
+        
         this.networkManager.updatePresence(this.player.getPresenceData());
 
         const RESPAWN_DELAY = 3000; // 3 seconds
@@ -1110,6 +1227,10 @@ export class GameCore {
         this.gameState.updateTime(deltaTime);
         this.networkManager.updatePresence(this.player.getPresenceData());
         
+        if (this.streamerDataManager) {
+            this.streamerDataManager.update(); // Update streamer data
+        }
+
         requestAnimationFrame(() => this.gameLoop());
     }
     
@@ -1241,6 +1362,16 @@ export class GameCore {
             canvas.webkitRequestPointerLock();
         }
     }
+
+    enablePointerLock(enable) {
+        if (enable) {
+            this.requestPointerLock();
+        } else {
+            if (document.exitPointerLock) {
+                document.exitPointerLock();
+            }
+        }
+    }
     
     checkWinCondition() {
         return this.gameState.checkWinCondition();
@@ -1366,6 +1497,8 @@ export class GameCore {
                 this.gameState.nextOverheatExplosionTime = this.gameState.gameTime * 1000 + (Math.random() * 5000 + 2000); // gameTime is in sec
                 this.gameState.nextHallucinationTime = this.gameState.gameTime * 1000 + (Math.random() * 10000 + 5000);
                 console.log("OVERHEAT MODE ACTIVATED");
+                if (this.streamerDataManager) this.streamerDataManager.addStreamerEvent("Overheat Mode Activated!");
+                if (this.matchStatsManager) this.matchStatsManager.addTimelineEvent("Overheat Mode Activated!", "game-event");
             }
         } else { // Fragment is not collected or no carrier
             if (this.gameState.isOverheatModeActive) {
@@ -1399,6 +1532,238 @@ export class GameCore {
                 this.networkManager.sendOverheatEffect({ effectType: 'hallucination', position: randomPosition, enemyType: randomEnemyType });
                 this.gameState.nextHallucinationTime = currentTimeMs + (Math.random() * 15000 + 8000); // Next one in 8-23s
             }
+        }
+    }
+
+    updateGlobalCorruption(amount) {
+        if (!this.gameState || !this.networkManager || !this.uiManager) {
+            console.error("Cannot update global corruption - core components missing.");
+            return;
+        }
+        this.gameState.corruptionLevel = Math.min(100, this.gameState.corruptionLevel + amount);
+
+        if (this.networkManager.updateRoomState) {
+            this.networkManager.updateRoomState({ globalCorruption: this.gameState.corruptionLevel });
+        }
+
+        if (this.uiManager.updateCorruptionDisplay) {
+            this.uiManager.updateCorruptionDisplay(); // UIManager reads directly from gameState
+        }
+
+        if (this.gameState.corruptionLevel >= 100) {
+            this.triggerMeltPhase();
+        }
+    }
+
+    triggerMeltPhase() {
+        if (this.gameState.isMeltPhaseActive) return; // Already active
+
+        console.warn("MELT PHASE TRIGGERED! The simulation is collapsing!");
+        this.gameState.isMeltPhaseActive = true;
+        if (this.streamerDataManager) this.streamerDataManager.addStreamerEvent("Melt Phase Initiated!");
+        if (this.matchStatsManager) this.matchStatsManager.addTimelineEvent("Melt Phase Initiated!", "game-event-critical");
+
+        // This state change should be authoritative or at least triggered by the client
+        // who pushed corruption to 100%. NetworkManager syncs it.
+        if (this.networkManager && typeof this.networkManager.updateRoomState === 'function') {
+            this.networkManager.updateRoomState({
+                isMeltPhaseActive: true,
+                globalCorruption: 100 // Ensure corruption is capped / set
+            });
+        } else {
+            console.error("NetworkManager or updateRoomState not available to sync Melt Phase.");
+        }
+
+        // Apply effects locally immediately for the client triggering it (or any client processing this).
+        // Other clients will apply effects when they receive the roomState update via NetworkManager.
+        if (this.uiManager && typeof this.uiManager.setMeltPhaseVisuals === 'function') {
+            this.uiManager.setMeltPhaseVisuals(true);
+        } else {
+            console.error("UIManager or setMeltPhaseVisuals not available.");
+        }
+
+        if (this.audioManager && typeof this.audioManager.startMeltPhaseNarration === 'function') {
+            this.audioManager.startMeltPhaseNarration();
+        } else {
+            console.error("AudioManager or startMeltPhaseNarration not available.");
+        }
+
+        // Optional: End game after a delay
+        // setTimeout(() => {
+        //     if (this.gameState.isMeltPhaseActive) { // Check if still in melt phase (not reset)
+        //         this.endGame("Corruption reached critical levels.");
+        //     }
+        // }, 30000); // End after 30s
+    }
+
+    isAuthoritativeClient() {
+        if (!this.networkManager || !this.networkManager.getPlayerId()) {
+            // console.warn("isAuthoritativeClient: NetworkManager not available or player ID not set.");
+            return false; // Cannot determine without network info
+        }
+        if (this.gameState && this.gameState.chaosInfluencerId) {
+            return this.networkManager.getPlayerId() === this.gameState.chaosInfluencerId;
+        }
+        // Fallback: lowest connected peer ID is authoritative
+        const connectedPeers = this.networkManager.getConnectedPeersIds(); // Includes self from NM implementation
+        if (!connectedPeers || connectedPeers.length === 0) {
+            // console.warn("isAuthoritativeClient: No connected peers.");
+            return true; // Or false, depending on desired behavior in an empty/local room
+        }
+        // Sort IDs alphabetically/numerically to ensure consistent tie-breaking
+        const lowestId = connectedPeers.sort()[0];
+        return this.networkManager.getPlayerId() === lowestId;
+    }
+
+    getPlayerPosition(playerId) {
+        if (!playerId) return null;
+        if (this.player && playerId === this.player.getPlayerId()) {
+            return this.player.position.clone(); // Return a clone to prevent direct modification
+        } else if (this.otherPlayers && this.otherPlayers.has(playerId)) {
+            const otherPlayer = this.otherPlayers.get(playerId);
+            if (otherPlayer.mesh) { // Other players' positions are on their mesh
+                return otherPlayer.mesh.position.clone();
+            }
+        }
+        // Fallback to presence data if available (might be slightly delayed)
+        if (this.networkManager && this.networkManager.room && this.networkManager.room.presence[playerId]) {
+            const presencePos = this.networkManager.room.presence[playerId].position;
+            if (presencePos && Array.isArray(presencePos)) {
+                return new THREE.Vector3(...presencePos);
+            }
+        }
+        console.warn(`getPlayerPosition: Could not find position for player ${playerId}`);
+        return null;
+    }
+
+    setPlayerPosition(playerId, newPosition) {
+        if (!playerId || !newPosition) return;
+
+        if (this.player && playerId === this.player.getPlayerId()) {
+            this.player.position.copy(newPosition);
+            if (typeof this.player.snapCameraToPosition === 'function') {
+                this.player.snapCameraToPosition();
+            } else {
+                // Default camera update if snap method doesn't exist
+                if(this.camera) this.camera.position.copy(this.player.position).add(this.player.cameraHeight instanceof THREE.Vector3 ? this.player.cameraHeight : new THREE.Vector3(0, this.player.cameraHeight || 1.6, 0));
+            }
+            // Important: Update presence so other players see the new position
+            if (this.networkManager) {
+                this.networkManager.updatePresence(this.player.getPresenceData());
+            }
+        } else if (this.otherPlayers && this.otherPlayers.has(playerId)) {
+            const otherPlayer = this.otherPlayers.get(playerId);
+            if (otherPlayer.mesh) {
+                otherPlayer.mesh.position.copy(newPosition);
+            }
+             // Also update the internal position if we store it separately (though usually mesh.position is the source of truth for remotes)
+            if (otherPlayer.position instanceof THREE.Vector3) {
+                 otherPlayer.position.copy(newPosition);
+            } else {
+                 otherPlayer.position = newPosition.clone();
+            }
+        } else {
+            console.warn(`setPlayerPosition: Could not find player ${playerId} to update position.`);
+        }
+    }
+
+    getPlayerName(playerId) {
+        if (!playerId) return 'Unknown Player';
+        if (this.player && playerId === this.player.getPlayerId()) {
+            return this.player.username || `Player ${playerId.substring(0, 4)}`;
+        }
+        if (this.networkManager && this.networkManager.getUsername) {
+            return this.networkManager.getUsername(playerId) || `Player ${playerId.substring(0, 4)}`;
+        }
+        // Fallback if NM or its method isn't available
+        const otherPlayerData = this.otherPlayers.get(playerId);
+        if (otherPlayerData && otherPlayerData.username) { // Assuming username might be on otherPlayer object
+            return otherPlayerData.username;
+        }
+        return `Player ${playerId.substring(0, 4)}`;
+    }
+
+    performPlayerSwap(playerA_id, playerB_id) {
+        if (!playerA_id || !playerB_id || playerA_id === playerB_id) {
+            if(this.uiManager) this.uiManager.addConsoleLogMessage("Swap failed: Invalid player IDs.", "error");
+            console.error("Swap failed: Invalid player IDs provided.", playerA_id, playerB_id);
+            return;
+        }
+
+        const posA = this.getPlayerPosition(playerA_id);
+        const posB = this.getPlayerPosition(playerB_id);
+
+        if (!posA || !posB) {
+            if(this.uiManager) this.uiManager.addConsoleLogMessage("Swap failed: Could not retrieve positions for one or both players.", "error");
+            console.error("Swap failed: Positions not found for players.", playerA_id, playerB_id, posA, posB);
+            return;
+        }
+
+        if (this.effectsManager && typeof this.effectsManager.triggerSwapEffect === 'function') {
+            this.effectsManager.triggerSwapEffect(posA);
+            this.effectsManager.triggerSwapEffect(posB);
+        } else {
+            console.warn("EffectsManager or triggerSwapEffect not found.");
+        }
+
+        // Perform the swap
+        this.setPlayerPosition(playerA_id, posB);
+        this.setPlayerPosition(playerB_id, posA);
+
+        const nameA = this.getPlayerName(playerA_id);
+        const nameB = this.getPlayerName(playerB_id);
+
+        if(this.uiManager) this.uiManager.addConsoleLogMessage(`Successfully swapped ${nameA} with ${nameB}.`, "info");
+        console.log(`Successfully swapped ${nameA} (${playerA_id}) with ${nameB} (${playerB_id})`);
+    }
+
+    recordConfessional(quoteText, boothId) {
+        if (!this.player || !this.gameState || !this.networkManager || !this.uiManager || !this.audioManager) {
+            console.error("Cannot record confessional: Core components missing.");
+            return;
+        }
+
+        const playerId = (this.player && typeof this.player.getPlayerId === 'function')
+            ? this.player.getPlayerId()
+            : (this.networkManager && typeof this.networkManager.getPlayerId === 'function'
+                ? this.networkManager.getPlayerId()
+                : 'unknownPlayer');
+
+        let playerName = 'Anonymous';
+        if (this.player && this.player.username) {
+            playerName = this.player.username;
+        } else if (playerId !== 'unknownPlayer' && this.networkManager && typeof this.networkManager.getUsername === 'function') {
+            playerName = this.networkManager.getUsername(playerId) || `Player ${playerId.substring(0, 4)}`;
+        } else if (playerId !== 'unknownPlayer' && this.networkManager && this.networkManager.room && this.networkManager.room.presence && this.networkManager.room.presence[playerId] && this.networkManager.room.presence[playerId].username) {
+            playerName = this.networkManager.room.presence[playerId].username;
+        } else {
+             playerName = `Player ${playerId !== 'unknownPlayer' ? playerId.substring(0,4) : 'Unknown'}`;
+        }
+
+        const logEntry = {
+            quote: quoteText,
+            playerId: playerId,
+            playerName: playerName,
+            team: this.player.team,
+            boothId: boothId,
+            timestamp: Date.now()
+        };
+
+        this.gameState.confessionalLogs.push(logEntry); // Store locally
+
+        if (this.networkManager && typeof this.networkManager.sendNewConfessionalLog === 'function') {
+            this.networkManager.sendNewConfessionalLog(logEntry);
+        } else {
+            console.warn("NetworkManager.sendNewConfessionalLog is not available.");
+        }
+
+        if (this.uiManager && typeof this.uiManager.addConsoleLogMessage === 'function') {
+            // Using console log for feedback, could also be a specific UI notification
+            this.uiManager.addConsoleLogMessage(`Confessional recorded at ${boothId}: "${quoteText}"`, "info");
+        }
+
+        if (this.audioManager && typeof this.audioManager.playSound === 'function') {
+            this.audioManager.playSound('confessional_saved'); // Ensure this sound key exists
         }
     }
 }

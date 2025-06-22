@@ -8,8 +8,11 @@ export class InputManager {
             moveRight: false,
             jump: false,
             sprint: false,
-            crouch: false
+            crouch: false,
+            shoot: false, // Added for mousedown/up tracking for console interaction
+            reload: false // Added for mousedown/up tracking
         };
+        this.consoleActive = false; // Added consoleActive flag
         
         this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
         
@@ -41,23 +44,39 @@ export class InputManager {
         });
         
         document.addEventListener('mousedown', (event) => {
+            if (this.consoleActive) return; // Check if console is active
             if (this.gameCore.gameState.isGameStarted) {
                 if (event.button === 0) { // Left click
+                    this.controls.shoot = true; // Set control state
                     this.gameCore.handleShoot();
                 } else if (event.button === 2) { // Right click
+                    this.controls.reload = true; // Set control state
                     this.gameCore.handleReload();
+                }
+            }
+        });
+
+        document.addEventListener('mouseup', (event) => {
+            // No consoleActive check here, as mouseup should always register if mousedown did
+            if (this.gameCore.gameState.isGameStarted) {
+                if (event.button === 0) { // Left click
+                    this.controls.shoot = false;
+                } else if (event.button === 2) { // Right click
+                    this.controls.reload = false;
                 }
             }
         });
         
         // Prevent right-click context menu
         document.addEventListener('contextmenu', (event) => {
+            if (this.consoleActive) return; // Check if console is active
             if (this.gameCore.gameState.isGameStarted) {
                 event.preventDefault();
             }
         });
         
         document.addEventListener('click', () => {
+            if (this.consoleActive) return; // Check if console is active
             if (this.gameCore.gameState.isGameStarted && !document.pointerLockElement) {
                 this.requestPointerLock();
             }
@@ -66,6 +85,21 @@ export class InputManager {
         window.addEventListener('resize', () => {
             this.gameCore.handleResize();
         });
+    }
+
+    setFocus(isGameFocused) {
+        this.consoleActive = !isGameFocused;
+        if (this.consoleActive) {
+            // Clear movement states when console opens to prevent continuous movement
+            this.controls.moveForward = false;
+            this.controls.moveBackward = false;
+            this.controls.moveLeft = false;
+            this.controls.moveRight = false;
+            this.controls.sprint = false;
+            this.controls.jump = false;
+            this.controls.crouch = false;
+            this.isDoubleTapSprinting = false;
+        }
     }
     
     requestPointerLock() {
@@ -99,7 +133,10 @@ export class InputManager {
     }
     
     handleKeyDown(event) {
-        if (this.gameCore.gameState.isConsoleOpen && event.key !== '`' && event.key !== '~') {
+        // Allow tilde and Escape to be processed by UIManager if console is active for toggling/closing
+        if (this.consoleActive && event.key !== '~' && event.key !== '`' && event.key !== 'Escape') {
+            // If console is active, UIManager's input field handler will take care of other keys.
+            // We don't want to process them for game actions here.
             return;
         }
         
@@ -145,17 +182,33 @@ export class InputManager {
                 break;
             case 'f':
                 event.preventDefault();
-                this.gameCore.handleInteraction();
+                this.gameCore.handleInteraction(); // This is generic interaction (F key)
+                break;
+            case 'e': // New case for 'E' key for Confessional
+                event.preventDefault();
+                if (!this.consoleActive &&
+                    this.gameCore.player && this.gameCore.player.currentBoothId &&
+                    this.gameCore.uiManager && !this.gameCore.uiManager.isConfessionalInputVisible())
+                {
+                    this.gameCore.uiManager.showConfessionalInput();
+                }
+                break;
+            case 'v': // New case for 'V' key for toggling speaking state
+                if (!this.consoleActive && this.gameCore.player) {
+                    event.preventDefault();
+                    this.gameCore.player.toggleSpeaking();
+                }
                 break;
             case '`':
             case '~':
                 event.preventDefault();
-                this.gameCore.consoleManager.toggle();
+                this.gameCore.uiManager.toggleConsole(); // Changed to uiManager
+                // this.consoleActive is set by UIManager via setFocus
                 break;
             case 'escape':
-                if (this.gameCore.gameState.isConsoleOpen) {
-                    this.gameCore.consoleManager.toggle();
-                } else if (document.pointerLockElement) {
+                // UIManager now handles Escape for console toggle.
+                // This InputManager part is for exiting pointer lock if console is not active.
+                if (!this.consoleActive && document.pointerLockElement) {
                     document.exitPointerLock();
                 }
                 break;
@@ -163,6 +216,8 @@ export class InputManager {
     }
     
     handleKeyUp(event) {
+        if (this.consoleActive) return; // Ignore key up for game controls if console is active
+
         switch (event.key.toLowerCase()) {
             case 'w':
                 this.controls.moveForward = false;
@@ -199,6 +254,8 @@ export class InputManager {
     }
     
     handleMouseMove(event) {
+        if (this.consoleActive) return; // Check if console is active
+
         /* @tweakable mouse sensitivity for looking around */
         const sensitivity = 0.002;
         

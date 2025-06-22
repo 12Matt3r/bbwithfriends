@@ -1,365 +1,358 @@
 export class LobbyManager {
     constructor(gameCore) {
         this.gameCore = gameCore;
-        this.selectedAvatar = 'spongebob'; // Default avatar
-        this.selectedTeamColor = 'blue'; // Default team color
-        this.selectedClass = 'assault'; // Default class
-        this.isReady = false;
-        this.lobbyPlayers = {}; // To store state of all players in lobby
-        this.networkManager = null;
-        this.uiManager = null;
+        this.uiManager = gameCore.uiManager;
+        this.networkManager = gameCore.networkManager;
 
-        // Chaos Vote Properties
-        this.chaosVotes = {}; // {'playerId1': 2, 'playerId2': 1}
-        this.localPlayerVotedFor = null; // ID of the player the local user has voted for
-        this.chaosInfluencer = null; // ID of the determined Chaos Influencer
+        this.lobbyPlayers = {}; // Stores { playerId: { username, avatar, teamColor, playerClass, isReady, id } }
+        this.localPlayerId = null;
+        this.localPlayerVotedForChaos = null; // Stores ID of player voted for, or null
+        this.chaosVotes = {}; // Stores { playerId: voteCount }
+        this.chaosInfluencer = null; // ID of the Chaos Influencer
     }
 
     initialize() {
-        // Store references to other managers
-        this.networkManager = this.gameCore.networkManager;
-        this.uiManager = this.gameCore.uiManager;
+        // Subscribe to network events for lobby updates
+        if (this.networkManager) {
+            this.localPlayerId = this.networkManager.getPlayerId(); // Assuming NM has this method
 
-        // Initialize chaos votes for any players already known (e.g. self)
-        // This will be more robustly populated as players join via handlePlayerUpdate
-        Object.keys(this.lobbyPlayers).forEach(playerId => {
-            if (!this.chaosVotes[playerId]) {
-                this.chaosVotes[playerId] = 0;
-            }
-        });
+            this.networkManager.subscribe('lobby_player_update', this.handleLobbyPlayerUpdate.bind(this));
+            this.networkManager.subscribe('lobby_chat_message', this.handleLobbyChatMessage.bind(this));
+            this.networkManager.subscribe('lobby_full_sync_request', this.handleFullLobbySyncRequest.bind(this));
+            this.networkManager.subscribe('chaos_vote_update', this.handleChaosVoteUpdateMsg.bind(this));
+            this.networkManager.subscribe('chaos_influencer_determined', this.handleChaosInfluencerDeterminedMsg.bind(this));
 
-        // Initial status update for the local player when entering lobby
-        this.updatePlayerLobbyStatus(); // This will also trigger UI update for vote list
 
-        // Example: if UIManager is responsible for listening to UI events and calling these handlers:
-        // this.uiManager.onAvatarSelected = this.handleAvatarSelection.bind(this);
-        // this.uiManager.onTeamColorSelected = this.handleTeamColorSelection.bind(this);
-        // this.uiManager.onReadyButtonClicked = this.handleReadyButtonClick.bind(this);
-
-        // Note: Network subscriptions for lobby updates are handled by NetworkManager
-        // which calls `handlePlayerUpdate` in this class.
-        // Set default class for local player on init if not already set by UI
-        const localPlayerId = this.getPlayerId();
-        if (localPlayerId && this.lobbyPlayers[localPlayerId]) {
-            this.lobbyPlayers[localPlayerId].playerClass = this.selectedClass;
-        } else if (localPlayerId) {
-             this.lobbyPlayers[localPlayerId] = { id: localPlayerId, playerClass: this.selectedClass, username: localPlayerId /*temp*/ };
+            // Initialize local player's default state
+            this.initializeLocalPlayerData();
+            this.updateLobbyUI();
+        } else {
+            console.error("LobbyManager: NetworkManager not available during initialization.");
+            // Even without network, allow local player data initialization for single-player testing or offline mode.
+            this.initializeLocalPlayerData();
         }
-
     }
 
     getPlayerId() {
-        return this.networkManager && this.networkManager.room ? this.networkManager.room.clientId : 'localPlayer';
+        return this.localPlayerId || (this.networkManager ? this.networkManager.getPlayerId() : null);
+    }
+
+    // Called by GameCore when transitioning to lobby
+    requestFullLobbyStateSync() {
+        const localPlayerData = this.initializeLocalPlayerData();
+        if (this.networkManager && localPlayerData) {
+            this.networkManager.sendLobbyFullSyncRequest(localPlayerData);
+        }
+        // Also immediately update local UI with current known players
+        this.updateLobbyUI();
+    }
+
+    handleFullLobbySyncRequest(data) { // Expects the full message object { type: ..., playerData: ... }
+        const requestingPlayerData = data.playerData;
+        // Another player is requesting a full sync, or has sent their initial state.
+        if (!requestingPlayerData || !requestingPlayerData.id) return;
+
+
+        if (requestingPlayerData.id !== this.localPlayerId) {
+            this.lobbyPlayers[requestingPlayerData.id] = {
+                ...this.lobbyPlayers[requestingPlayerData.id], // Keep existing votes if any
+                ...requestingPlayerData
+            };
+        }
+
+        // Send our current state back to them (or to all if that's how sendLobbyPlayerUpdate works)
+        const localPlayerData = this.initializeLocalPlayerData();
+        if (this.networkManager && localPlayerData) {
+            this.networkManager.sendLobbyPlayerUpdate(localPlayerData);
+        }
+        this.updateLobbyUI();
+        this.checkAllPlayersReady();
+    }
+
+    initializeLocalPlayerData() {
+        if (!this.localPlayerId && this.networkManager) { // Attempt to get localPlayerId if not set
+            this.localPlayerId = this.networkManager.getPlayerId();
+        }
+
+        if (this.localPlayerId && !this.lobbyPlayers[this.localPlayerId]) {
+            const username = this.networkManager
+                ? (this.networkManager.getUsername(this.localPlayerId) || 'Player ' + this.localPlayerId.substring(0,4))
+                : ('LocalPlayer'); // Fallback username if NM not available
+
+            this.lobbyPlayers[this.localPlayerId] = {
+                id: this.localPlayerId,
+                username: username,
+                avatar: 'default',
+                teamColor: 'blue',
+                playerClass: 'assault',
+                isReady: false
+            };
+        }
+        return this.lobbyPlayers[this.localPlayerId];
     }
 
     handleAvatarSelection(avatar) {
-        this.selectedAvatar = avatar;
+        const localPlayer = this.initializeLocalPlayerData();
+        if (!localPlayer) return;
+        localPlayer.avatar = avatar;
         this.updatePlayerLobbyStatus();
     }
 
     handleTeamColorSelection(color) {
-        this.selectedTeamColor = color;
+        const localPlayer = this.initializeLocalPlayerData();
+        if (!localPlayer) return;
+        localPlayer.teamColor = color;
+        this.updatePlayerLobbyStatus();
+    }
+
+    handleClassSelection(playerClass) {
+        const localPlayer = this.initializeLocalPlayerData();
+        if (!localPlayer) return;
+        localPlayer.playerClass = playerClass;
         this.updatePlayerLobbyStatus();
     }
 
     handleReadyButtonClick() {
-        this.isReady = !this.isReady;
-        this.updatePlayerLobbyStatus();
-    }
-
-    handleClassSelection(className) {
-        this.selectedClass = className;
-        // Potentially update local player object's class immediately for UI responsiveness
-        const localPlayerId = this.getPlayerId();
-        if (localPlayerId && this.lobbyPlayers[localPlayerId]) {
-            this.lobbyPlayers[localPlayerId].playerClass = this.selectedClass;
-        }
+        const localPlayer = this.initializeLocalPlayerData();
+        if (!localPlayer) return;
+        localPlayer.isReady = !localPlayer.isReady;
         this.updatePlayerLobbyStatus();
     }
 
     updatePlayerLobbyStatus() {
-        const playerId = this.getPlayerId();
-        if (!playerId) return;
-
-        if (this.chaosVotes[playerId] === undefined) {
-            this.chaosVotes[playerId] = 0;
+        const localPlayerData = this.initializeLocalPlayerData();
+        if (!localPlayerData) {
+            console.error("Cannot update player lobby status - local player data not available.");
+            return;
+        }
+        if (this.networkManager) {
+            this.networkManager.sendLobbyPlayerUpdate(localPlayerData);
+        } else {
+            // Handle offline scenario: UI might still need update
+            console.log("NetworkManager not available, local lobby status updated (offline).");
         }
 
-        const playerData = {
-            id: playerId,
-            username: (this.networkManager && this.networkManager.room && this.networkManager.room.presence[playerId]?.username) || playerId,
-            avatar: this.selectedAvatar,
-            teamColor: this.selectedTeamColor,
-            playerClass: this.selectedClass, // Include selected class
-            isReady: this.isReady,
+        // Update own UI immediately
+        this.updateLobbyUI();
+        this.checkAllPlayersReady(); // Check readiness even in offline mode (for starting a local game perhaps)
+    }
+
+    // Called by NetworkManager when a 'lobby_player_update' message is received
+    handleLobbyPlayerUpdate(data) { // Expects the full message object { type: ..., playerData: ... }
+        const playerData = data.playerData;
+        if (!playerData || !playerData.id) return;
+
+        // Ensure username is part of the update or fetched if missing
+        if (!playerData.username && this.networkManager) {
+            playerData.username = this.networkManager.getUsername(playerData.id) || 'Player ' + playerData.id.substring(0,4);
+        }
+
+        this.lobbyPlayers[playerData.id] = {
+            ...this.lobbyPlayers[playerData.id], // Preserve existing data like votes
+            ...playerData
         };
 
-        // Update local representation immediately (ensure all fields including new ones are covered)
-        if (!this.lobbyPlayers[playerId]) this.lobbyPlayers[playerId] = {};
-        Object.assign(this.lobbyPlayers[playerId], playerData);
+        // If the update is for the local player (e.g., echo from server or host confirmation),
+        // ensure local state doesn't get overwritten if it's more current for some fields.
+        // However, 'isReady' state from server/host should be authoritative if that's the model.
+        // For now, simple overwrite is fine.
 
-
-        // Send update to other players
-        if (this.networkManager) {
-            this.networkManager.sendLobbyPlayerUpdate(playerData);
-        }
-
-        // Update the UI for all players (player list and vote list)
-        // Ensure local player's class selection is reflected immediately even before network echo
-        if (this.uiManager) {
-            const playersArray = Object.values(this.lobbyPlayers);
-            this.uiManager.updateLobbyPlayerList(playersArray);
-            this.uiManager.updateChaosVoteList(playersArray, playerId, this.chaosVotes, this.chaosInfluencer, this.localPlayerVotedFor);
-        }
-
-        // Check if all players are ready (potential game start logic)
+        this.updateLobbyUI();
         this.checkAllPlayersReady();
     }
 
-    handlePlayerUpdate(playerData) {
-        // Called by NetworkManager when a lobby_player_update is received
-        if (!playerData || !playerData.id) {
-            console.warn('Received invalid player update data:', playerData);
-            return;
-        }
+    // Called by NetworkManager for chat messages
+    handleLobbyChatMessage({ playerId, message }) {
+        if (!this.uiManager) return;
+        const playerName = (this.lobbyPlayers[playerId] && this.lobbyPlayers[playerId].username) ||
+                           (this.networkManager ? this.networkManager.getUsername(playerId) : null) ||
+                           'Player ' + playerId.substring(0,4);
+        this.uiManager.addChatMessage(playerName, message);
+    }
 
-        const isNewPlayer = !this.lobbyPlayers[playerData.id];
-        if (!this.lobbyPlayers[playerData.id]) { // If player is entirely new
-            this.lobbyPlayers[playerData.id] = {};
-        }
-
-        // Merge received data, ensuring playerClass is included
-        this.lobbyPlayers[playerData.id] = {
-            ...this.lobbyPlayers[playerData.id],
-            ...playerData
-        };
-        if (playerData.playerClass) {
-            this.lobbyPlayers[playerData.id].playerClass = playerData.playerClass;
-        }
-
-
-        if (isNewPlayer && this.chaosVotes[playerData.id] === undefined) {
-            this.chaosVotes[playerData.id] = 0;
-        }
-
-        // Update UI
+    updateLobbyUI() {
         if (this.uiManager) {
             const playersArray = Object.values(this.lobbyPlayers);
             this.uiManager.updateLobbyPlayerList(playersArray);
-            this.uiManager.updateChaosVoteList(playersArray, this.getPlayerId(), this.chaosVotes, this.chaosInfluencer, this.localPlayerVotedFor);
+            this.uiManager.updateChaosVoteList(
+                playersArray,
+                this.localPlayerId,
+                this.chaosVotes,
+                this.chaosInfluencer,
+                this.localPlayerVotedForChaos
+            );
         }
+    }
 
-        // Check if this update caused all players to be ready
-        this.checkAllPlayersReady();
+    // Method to remove a player from the lobby (e.g., on disconnect)
+    removePlayer(playerId) {
+        if (this.lobbyPlayers[playerId]) {
+            delete this.lobbyPlayers[playerId];
+            // Remove their votes if any
+            if (this.chaosVotes[playerId]) {
+                // This case is if the disconnected player was voted FOR.
+                // We might need to re-evaluate influencer if they were it.
+                // For now, just remove their vote count.
+                delete this.chaosVotes[playerId];
+            }
+            // Check if the disconnected player was the one who voted
+            for (const votedForId in this.chaosVotes) {
+                // This requires votes to be stored as {votedFor: [voter1, voter2]}
+                // Simpler: if a player disconnects, their vote is implicitly removed.
+                // The current `this.chaosVotes` structure {playerId: voteCount} doesn't store who voted for whom.
+                // Let's assume for now that `determineChaosInfluencer` re-calculates from active players.
+            }
+
+            this.updateLobbyUI();
+            this.determineChaosInfluencer(); // Re-evaluate after a player leaves
+            this.checkAllPlayersReady(); // Game shouldn't start if a player leaves and conditions are no longer met
+        }
     }
 
     checkAllPlayersReady() {
-        if (!this.networkManager || !this.networkManager.room) return false;
-
-        const connectedPlayerIds = Object.keys(this.networkManager.room.peers || {});
-        if (connectedPlayerIds.length === 0 && Object.keys(this.lobbyPlayers).length === 1) { // Only local player
-             // For single player/testing, ready button might directly start the game.
-             // if (this.isReady) this.gameCore.startGameFromLobby(); // Example
-            return this.isReady; // Or handle single player start differently
+        if (!this.networkManager || Object.keys(this.lobbyPlayers).length === 0) {
+            // console.log("CheckAllPlayersReady: No players or NM not ready.");
+            return;
         }
 
-        if (connectedPlayerIds.length === 0) return false; // No connected peers
+        // Consider only players currently connected via NetworkManager's peer list
+        const connectedPlayerIds = this.networkManager.getConnectedPeersIds ? this.networkManager.getConnectedPeersIds() : Object.keys(this.lobbyPlayers);
 
-        const allReady = connectedPlayerIds.every(id => this.lobbyPlayers[id] && this.lobbyPlayers[id].isReady);
-
-        if (allReady && connectedPlayerIds.length > 0) { // Ensure there are actual players
-            // Potentially add a small delay or a master client check before starting
-            console.log("All players are ready! Starting game...");
-            this.gameCore.startGameFromLobby(); // Notify GameCore to start
-            return true;
+        if (connectedPlayerIds.length === 0) {
+             // console.log("CheckAllPlayersReady: No connected players.");
+            return;
         }
-        return false;
+
+        // Minimum 1 player to start (for testing), ideally more for a real game.
+        const MIN_PLAYERS_TO_START = 1;
+        if (connectedPlayerIds.length < MIN_PLAYERS_TO_START) {
+            // console.log(`CheckAllPlayersReady: Not enough players. Need ${MIN_PLAYERS_TO_START}, have ${connectedPlayerIds.length}`);
+            return;
+        }
+
+        let allReady = true;
+        for (const playerId of connectedPlayerIds) {
+            const player = this.lobbyPlayers[playerId];
+            if (!player || !player.isReady) {
+                allReady = false;
+                break;
+            }
+        }
+
+        if (allReady) {
+            // Before starting, ensure Chaos Influencer is determined if not already.
+            if (!this.chaosInfluencer) {
+                this.determineChaosInfluencer(true); // Pass true to force determination if possible
+            }
+            console.log("All players ready! Starting game...");
+            if (this.gameCore && typeof this.gameCore.startGameFromLobby === 'function') {
+                this.gameCore.startGameFromLobby();
+            } else {
+                console.error("LobbyManager: gameCore.startGameFromLobby is not a function or gameCore is not set.");
+            }
+        } else {
+            // console.log("CheckAllPlayersReady: Not all players are ready.");
+        }
     }
 
-    // Method to be called by UIManager if lobby data needs to be resent (e.g. on opening lobby screen)
-    requestFullLobbyStateSync() {
-        this.updatePlayerLobbyStatus(); // Resend local player status
-        // This will also trigger uiManager.updateChaosVoteList via updatePlayerLobbyStatus
-    }
-
-    // Chaos Vote Methods
+    // Chaos Influencer Voting Logic
     castChaosVote(votedPlayerId) {
-        if (this.localPlayerVotedFor) {
-            // Simple model: one vote per player. No changing votes for now.
-            console.log("You have already voted.");
-            if (this.uiManager) this.uiManager.addChatMessage(null, "You've already cast your vote for Chaos Influencer.", true);
+        if (!this.localPlayerId || this.localPlayerVotedForChaos) {
+            this.uiManager.showNotification("You have already voted or cannot vote.");
+            return;
+        }
+        if (votedPlayerId === this.localPlayerId) {
+            this.uiManager.showNotification("You cannot vote for yourself.");
             return;
         }
 
-        if (!this.lobbyPlayers[votedPlayerId]) {
-            console.warn(`Attempted to vote for non-existent player: ${votedPlayerId}`);
-            return;
-        }
+        this.localPlayerVotedForChaos = votedPlayerId; // Mark that local player has voted
 
-        this.localPlayerVotedFor = votedPlayerId; // Mark that local player has voted
-        this.chaosVotes[votedPlayerId] = (this.chaosVotes[votedPlayerId] || 0) + 1;
-
+        // Send vote to network
         if (this.networkManager) {
-            // Corrected: sendChaosVote in NetworkManager takes only one argument as per its new definition
-            this.networkManager.sendChaosVote(votedPlayerId);
+            this.networkManager.sendChaosVote(this.localPlayerId, votedPlayerId);
         }
 
-        if (this.uiManager) {
-            // Disable all vote buttons after voting.
-            this.uiManager.disableAllVoteButtons();
-            this.uiManager.updateChaosVoteList(Object.values(this.lobbyPlayers), this.getPlayerId(), this.chaosVotes, this.chaosInfluencer, this.localPlayerVotedFor);
-        }
+        // Optimistically update local UI for vote button disabling
+        this.updateLobbyUI();
+        this.uiManager.showNotification(`You voted for ${this.lobbyPlayers[votedPlayerId]?.username || votedPlayerId}`);
 
-        this.checkVotingComplete();
+        // Host/Authoritative client should handle actual vote counting and determination
     }
 
-    handleChaosVote(voterPlayerId, votedPlayerId) {
-        // Called by NetworkManager when a chaos_vote_cast message is received
-        if (!this.chaosVotes.hasOwnProperty(votedPlayerId)) {
-             // This might happen if a player just joined and their data hasn't fully propagated
-            this.chaosVotes[votedPlayerId] = 0;
+    handleChaosVoteUpdateMsg(voteData) { // { voterId, votedForId, allVotes }
+        // This message should ideally come from an authoritative source (host)
+        // containing the complete and validated vote counts.
+        if (voteData.allVotes) {
+            this.chaosVotes = voteData.allVotes;
         }
-        this.chaosVotes[votedPlayerId]++;
+        // If a specific vote is sent:
+        // if (voteData.voterId && voteData.votedForId) {
+        //    this.chaosVotes[voteData.votedForId] = (this.chaosVotes[voteData.votedForId] || 0) + 1;
+        // }
 
-        // Note: We don't set localPlayerVotedFor here, only in castChaosVote for the local user.
-        // We also don't disable buttons here, UIManager does that on local vote.
-
-        if (this.uiManager) {
-            this.uiManager.updateChaosVoteList(Object.values(this.lobbyPlayers), this.getPlayerId(), this.chaosVotes, this.chaosInfluencer, this.localPlayerVotedFor);
-        }
-
-        this.checkVotingComplete();
+        // If this client is authoritative, it might redetermine. Otherwise, it waits for determined message.
+        // For now, let's assume an authoritative message updates chaosVotes directly.
+        this.updateLobbyUI();
+        // Potentially, the authoritative client calls determineChaosInfluencer and broadcasts the result
     }
 
-    checkVotingComplete() {
-        // Condition: all currently connected players have cast a vote.
-        // This needs a reliable list of "votable" players.
-        // For simplicity, let's assume all players in lobbyPlayers are expected to vote.
-        // Or, more simply for now: if total votes == number of players.
-
-        const connectedPlayerCount = Object.keys(this.lobbyPlayers).length;
-        if (connectedPlayerCount === 0) return; // No players, no voting.
-
-        let totalVotesCast = 0;
-        for (const playerId in this.chaosVotes) {
-            totalVotesCast += this.chaosVotes[playerId];
-            // This isn't quite right if players can receive multiple votes.
-            // A better check: has each player *cast* a vote?
-            // This requires knowing who has voted, e.g. by checking `localPlayerVotedFor` on each client's LobbyManager,
-            // or by the server/master client tracking it.
-            // For now, let's use a simpler heuristic: if a certain number of votes are in.
-            // Or, a more direct (but still client-side estimated) approach:
-            // if (Object.values(this.lobbyPlayers).every(p => p.hasVoted)) { ... } (requires 'hasVoted' flag)
+    handleChaosInfluencerDeterminedMsg(data) { // { influencerId }
+        this.chaosInfluencer = data.influencerId;
+        if (this.uiManager && this.chaosInfluencer) {
+            const influencerName = this.lobbyPlayers[this.chaosInfluencer]?.username || this.chaosInfluencer;
+            this.uiManager.showNotification(`Chaos Influencer is: ${influencerName}!`);
         }
-
-        // Simplistic: if total votes matches player count (assumes one vote per person, and everyone votes)
-        // This is a placeholder; robust voting completion needs more thought, e.g., a timer or explicit "voting phase ended" signal.
-        // Let's say voting is "complete" enough to determine a leader when all present players have had a chance to vote.
-        // For now, we'll just determine the current leader each time a vote comes in.
-        // A true "voting complete" might be when all players are READY, then a vote timer starts.
-
-        this.determineChaosInfluencer(); // Determine (possibly interim) influencer after each vote.
+        this.updateLobbyUI();
     }
 
-    determineChaosInfluencer() {
-        if (Object.keys(this.chaosVotes).length === 0) {
-            this.chaosInfluencer = null;
-            return;
-        }
+    determineChaosInfluencer(forceDetermination = false) {
+        // This should ideally be run by a host or authoritative client.
+        // For a decentralized setup, it's more complex (e.g., highest ID player makes determination if votes are tied).
+        // Let's assume for now this client *might* be the one to do it if forced.
 
-        let maxVotes = -1;
+        if (this.chaosInfluencer && !forceDetermination) return; // Already determined
+
+        let maxVotes = 0;
         let potentialInfluencers = [];
 
         for (const playerId in this.chaosVotes) {
-            if (this.chaosVotes[playerId] > maxVotes) {
-                maxVotes = this.chaosVotes[playerId];
-                potentialInfluencers = [playerId];
-            } else if (this.chaosVotes[playerId] === maxVotes) {
-                potentialInfluencers.push(playerId);
+            if (this.lobbyPlayers[playerId]) { // Only consider active players
+                const numVotes = this.chaosVotes[playerId];
+                if (numVotes > maxVotes) {
+                    maxVotes = numVotes;
+                    potentialInfluencers = [playerId];
+                } else if (numVotes === maxVotes) {
+                    potentialInfluencers.push(playerId);
+                }
             }
         }
 
+        let newInfluencer = null;
         if (potentialInfluencers.length > 0) {
-            // Handle ties: for now, pick the first one if tied. Could be random.
-            const newInfluencer = potentialInfluencers[0];
-            if (this.chaosInfluencer !== newInfluencer) {
-                // this.chaosInfluencer = newInfluencer; // This is now handled by setChaosInfluencer or locally if no network update
-                // console.log(`Chaos Influencer is now: ${this.lobbyPlayers[this.chaosInfluencer]?.username || this.chaosInfluencer}`);
-
-                // If this client is determining the influencer (e.g., master client or single player mode)
-                // then it should announce it. Otherwise, it waits for network message.
-                // For now, let's assume this client can announce if it detects a change.
-                // This logic might be better if only one client (master) sends this message.
-                if (this.networkManager && this.chaosInfluencer !== newInfluencer) {
-                     this.networkManager.sendChaosInfluencerDetermined(newInfluencer);
-                }
-                // Set it locally for now. If a network message comes, setChaosInfluencer will align it.
-                this.setChaosInfluencer(newInfluencer);
+            if (potentialInfluencers.length === 1) {
+                newInfluencer = potentialInfluencers[0];
+            } else {
+                // Tie-breaking: pick one randomly or by lowest/highest ID
+                newInfluencer = potentialInfluencers.sort()[0]; // Lowest ID wins ties
             }
-        } else if (this.chaosInfluencer !== null) { // No one has votes, or all votes are zero
-             if (this.networkManager) {
-                this.networkManager.sendChaosInfluencerDetermined(null);
-             }
-             this.setChaosInfluencer(null);
-        }
-
-        // UI update is handled by setChaosInfluencer or at the end of handleChaosVote/castChaosVote
-    }
-
-    setChaosInfluencer(influencerId) {
-        if (this.chaosInfluencer !== influencerId) {
-            this.chaosInfluencer = influencerId;
-            const influencerName = this.chaosInfluencer ? (this.lobbyPlayers[this.chaosInfluencer]?.username || this.chaosInfluencer) : "None";
-            console.log(`Chaos Influencer set: ${influencerName}`);
-
-            if (this.uiManager) {
-                const playersArray = Object.values(this.lobbyPlayers);
-                this.uiManager.updateChaosVoteList(playersArray, this.getPlayerId(), this.chaosVotes, this.chaosInfluencer, this.localPlayerVotedFor);
-                // updateChaosInfluencerDisplay is called within updateChaosVoteList
-
-                if (this.getPlayerId() === this.chaosInfluencer && this.chaosInfluencer !== null) {
-                    this.uiManager.showNotification("You are the new Chaos Influencer!");
-                } else if (this.chaosInfluencer !== null) {
-                     this.uiManager.showNotification(`${influencerName} is now the Chaos Influencer!`);
-                } else {
-                     this.uiManager.showNotification(`Chaos Influencer role is now vacant.`);
-                }
+        } else if (Object.keys(this.lobbyPlayers).length > 0 && forceDetermination) {
+            // No votes, but forced: pick a random active player (or by ID)
+            const activePlayers = Object.keys(this.lobbyPlayers).sort();
+            if (activePlayers.length > 0) {
+                 newInfluencer = activePlayers[Math.floor(Math.random() * activePlayers.length)];
             }
         }
-    }
 
-    // Call this when a player disconnects to clean up their votes
-    handlePlayerDisconnect(disconnectedPlayerId) {
-        const wasInfluencer = (this.chaosInfluencer === disconnectedPlayerId);
 
-        if (this.localPlayerVotedFor === disconnectedPlayerId) {
-            this.localPlayerVotedFor = null;
-            // UI will need to re-enable vote buttons if UIManager handles that.
-            // For now, updateChaosVoteList will show buttons enabled again.
+        if (newInfluencer && newInfluencer !== this.chaosInfluencer) {
+            this.chaosInfluencer = newInfluencer;
+            console.log("Chaos Influencer determined:", this.chaosInfluencer);
+            // Authoritative client would send this determination to others
+            if (this.networkManager) { // && this.networkManager.isHost() or some authority check
+                 this.networkManager.sendChaosInfluencerDetermined(this.chaosInfluencer);
+            }
         }
-
-        // Remove the player from lobbyPlayers. Votes for them in `this.chaosVotes` can remain,
-        // but they won't be displayed or win if not in `lobbyPlayers`.
-        delete this.lobbyPlayers[disconnectedPlayerId];
-        // Optionally, remove their entry from this.chaosVotes as well:
-        // delete this.chaosVotes[disconnectedPlayerId];
-
-        if (wasInfluencer) {
-            this.chaosInfluencer = null; // Influencer is gone
-            this.determineChaosInfluencer(); // Re-evaluate, potentially announcing a new one or null
-        } else {
-            // If the disconnected player wasn't the influencer, the current influencer might still be valid.
-            // However, the voting landscape changed, so a re-evaluation might be good.
-            this.determineChaosInfluencer();
-        }
-
-
-        // General UI update
-        if (this.uiManager) {
-            const playersArray = Object.values(this.lobbyPlayers);
-            this.uiManager.updateLobbyPlayerList(playersArray);
-            // Pass localPlayerVotedFor so UIManager knows if local player can vote again
-            this.uiManager.updateChaosVoteList(playersArray, this.getPlayerId(), this.chaosVotes, this.chaosInfluencer, this.localPlayerVotedFor);
-        }
+        this.updateLobbyUI();
     }
 }

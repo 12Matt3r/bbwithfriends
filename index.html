@@ -180,12 +180,65 @@
             </div>
 
             <!-- Kill Feed -->
-            <div id="kill-feed"></div>
+            <div id="kill-feed-container"></div>
 
             <!-- Player List -->
             <div id="player-list">
                 <div class="player-list-header">UNDERWATER FRIENDS</div>
                 <div id="player-list-content"></div>
+            </div>
+
+            <!-- Map Reveal Overlay -->
+            <div id="map-reveal-overlay" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 70vw; height: 70vh; background-color: rgba(0,20,0,0.85); border: 2px solid #0f0; z-index: 900; box-shadow: 0 0 20px #0f0;">
+                <img id="map-reveal-image" src="placeholder_map_layout.png" style="width: 100%; height: 100%; object-fit: contain; opacity: 0.5;" alt="Map Layout">
+                <div id="map-reveal-player-icons" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;">
+                    <!-- Player icons will be added here -->
+                </div>
+                <div id="map-reveal-timer" style="position: absolute; bottom: 10px; right: 10px; color: #0f0; font-size: 20px;"></div>
+            </div>
+
+            <!-- Confessional Booth UI -->
+            <div id="confessional-prompt" style="display: none; position: fixed; top: 70%; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.7); padding: 15px; color: white; border-radius: 5px; border: 1px solid var(--primary-color); z-index: 950;">Press E to record confessional.</div>
+            <div id="confessional-input-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1001; display: flex; justify-content: center; align-items: center;">
+                <div style="background: #001122; padding: 25px; border-radius: 8px; text-align: center; border: 2px solid var(--primary-color); box-shadow: 0 0 15px var(--primary-color);">
+                    <h3 style="color: var(--secondary-color); margin-bottom: 15px; font-size: 1.5em;">Enter your Confession</h3>
+                    <p style="color: #ccc; font-size: 0.9em; margin-bottom:15px;">(max 100 characters)</p>
+                    <input type="text" id="confessional-text-input" maxlength="100" style="width: 350px; padding: 12px; margin-bottom: 20px; background-color: #002233; border: 1px solid var(--primary-color); color: white; font-family: 'Orbitron', monospace; font-size: 1em;">
+                    <div style="display: flex; justify-content: space-around;">
+                        <button id="submit-confessional-button" class="menu-btn" style="min-width: 120px; background: linear-gradient(45deg, #008844, #00cc66); border-color: #00cc66;">Submit</button>
+                        <button id="cancel-confessional-button" class="menu-btn" style="min-width: 120px; background: linear-gradient(45deg, #880000, #cc0000); border-color: #cc0000;">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Match Summary Screen -->
+            <div id="match-summary-screen" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.95); color: white; z-index: 2000; overflow-y: auto; padding: 20px; box-sizing: border-box; font-family: 'Orbitron', monospace;">
+                <h2 style="text-align: center; color: var(--secondary-color); margin-bottom: 20px; font-size: 2em;">Match Summary</h2>
+
+                <div id="summary-stats" style="margin-bottom: 20px; background: rgba(20,20,40,0.7); padding: 15px; border-radius: 5px; border: 1px solid var(--primary-color);">
+                    <h3 style="color: var(--primary-color); margin-bottom: 10px;">Key Statistics</h3>
+                    <p><strong>Longest Fragment Holder:</strong> <span id="summary-longest-holder">-</span></p>
+                    <p><strong>Most Commands Used:</strong> <span id="summary-most-commands">-</span></p>
+                </div>
+
+                <div id="summary-confessionals" style="margin-bottom: 20px; background: rgba(20,20,40,0.7); padding: 15px; border-radius: 5px; border: 1px solid var(--primary-color);">
+                    <h3 style="color: var(--primary-color); margin-bottom: 10px;">Confessional Highlights</h3>
+                    <ul id="summary-confessional-list" style="list-style: none; padding-left: 0; max-height: 150px; overflow-y: auto;"></ul>
+                </div>
+
+                <div id="summary-timeline" style="margin-bottom: 20px; background: rgba(20,20,40,0.7); padding: 15px; border-radius: 5px; border: 1px solid var(--primary-color);">
+                    <h3 style="color: var(--primary-color); margin-bottom: 10px;">Match Timeline (Chaos Log)</h3>
+                    <textarea id="summary-timeline-log" style="width: 100%; height: 150px; background: #111; color: #ddd; font-family: 'Courier New', Courier, monospace; resize: none; border: 1px solid #444; padding: 5px;" readonly></textarea>
+                    <button id="copy-timeline-button" class="menu-btn" style="margin-top: 10px; padding: 8px 15px; font-size: 0.9em;">Copy Timeline</button>
+                </div>
+
+                <div id="summary-screenshot-container" style="margin-bottom: 20px; text-align: center; background: rgba(20,20,40,0.7); padding: 15px; border-radius: 5px; border: 1px solid var(--primary-color);">
+                    <h3 style="color: var(--primary-color); margin-bottom: 10px;">Endgame Screenshot</h3>
+                    <img id="summary-screenshot-img" style="max-width: 90%; max-height: 250px; border: 1px solid #555; display: block; margin: 0 auto 10px auto;" alt="Endgame Screenshot"/>
+                    <a id="download-screenshot-link" download="game_screenshot.png" class="menu-btn" style="display: inline-block; text-decoration: none; padding: 8px 15px; font-size: 0.9em;">Download Screenshot</a>
+                </div>
+
+                <button id="close-summary-button" class="menu-btn" style="display: block; margin: 20px auto 0 auto; width: 200px;">Close</button>
             </div>
         </div>
 
