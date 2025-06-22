@@ -199,6 +199,16 @@ export class NetworkManager {
         this.sendMessage('execute_reveal_map', { duration: durationSeconds });
     }
 
+    sendAudienceCommand(commandName, args) {
+        // Audience commands are sent from a client, but their 'source' is conceptual.
+        // The actual instigatorPlayerId in ConsoleManager for audience commands will be "AUDIENCE".
+        this.send({ type: 'audience_command', command: commandName, arguments: args, source: 'AUDIENCE' });
+    }
+
+    sendApplyPlayerEffectCommand(targetPlayerId, effectDetails) {
+        this.send({ type: 'apply_player_effect', targetId: targetPlayerId, effect: effectDetails });
+    }
+
     sendNewConfessionalLog(logEntry) {
         this.sendMessage('new_confessional_log', { log: logEntry });
     }
@@ -330,6 +340,31 @@ export class NetworkManager {
                     this.gameCore.uiManager.showMapReveal(data.duration);
                 } else {
                     console.error("UIManager.showMapReveal not found for data:", data);
+                }
+                break;
+
+            case 'audience_command':
+                if (this.gameCore.consoleManager && typeof this.gameCore.consoleManager.executeNetworkedCommand === 'function') {
+                    this.gameCore.consoleManager.executeNetworkedCommand(data.command, data.arguments, data.source, true); // true for isAudienceCmd
+                } else {
+                    console.error("ConsoleManager or executeNetworkedCommand not found for audience_command:", data);
+                }
+                break;
+
+            case 'apply_player_effect':
+                // All clients receive this to show visuals. Only the target player applies the core effect logic.
+                if (this.gameCore.player && typeof this.gameCore.player.getPlayerId === 'function' && this.gameCore.player.getPlayerId() === data.targetId) {
+                    if (typeof this.gameCore.player.applyTimedEffect === 'function') {
+                        this.gameCore.player.applyTimedEffect(data.effect);
+                    } else {
+                        console.error("Player.applyTimedEffect not found for target player.");
+                    }
+                }
+                // All clients show visuals for the target player
+                if (this.gameCore.effectsManager && typeof this.gameCore.effectsManager.showPlayerEffectVisuals === 'function') {
+                    this.gameCore.effectsManager.showPlayerEffectVisuals(data.targetId, data.effect);
+                } else {
+                     console.error("EffectsManager.showPlayerEffectVisuals not found.");
                 }
                 break;
 

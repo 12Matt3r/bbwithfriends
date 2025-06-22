@@ -588,7 +588,8 @@ export class Player {
     takeDamage(amount, weaponType = 'unknown', attackerId = null) { // Added weaponType and attackerId
         if (this.isDead) return false;
 
-        this.lastDamageInfo = { attackerId: attackerId, weapon: weaponType };
+        this.lastDamageInfo = { attackerId: attackerId, weapon: weaponType }; // Ensured this is early
+
         this.health = Math.max(0, this.health - amount);
 
         if (this.gameCore && this.gameCore.effectsManager) { // Damage screen flash
@@ -598,10 +599,11 @@ export class Player {
             this.gameCore.audioManager.playSound('player_hit', this.position); // Play at player's position
         }
 
-        if (this.health <= 0) {
+        if (this.health <= 0 && !this.isDead) { // Ensure death processing only happens once
             this.isDead = true;
             if (this.gameCore) {
-                this.gameCore.handlePlayerDeath(attackerId); // Pass attackerId to GameCore
+                // Pass weaponType to handlePlayerDeath as well
+                this.gameCore.handlePlayerDeath(attackerId, weaponType);
             }
         }
 
