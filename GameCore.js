@@ -11,9 +11,10 @@ import { TreasureMapManager } from './TreasureMapManager.js';
 import { WeaponManager } from './WeaponManager.js';
 import { GameState } from './GameState.js';
 import { EffectsManager } from './EffectsManager.js';
-import { LobbyManager } from './LobbyManager.js'; // Added LobbyManager import
+import { LobbyManager } from './LobbyManager.js';
 import { StreamerDataManager } from './StreamerDataManager.js';
 import { MatchStatsManager } from './MatchStatsManager.js';
+import { TEAM_IDS, PLAYER_CLASSES, MESSAGE_TYPES } from './Constants.js';
 
 // Define spawn points globally or at a scope accessible by relevant methods
 const TEAM_ALPHA_SPAWN_POINTS = [
@@ -32,6 +33,48 @@ let betaSpawnIndex = 0;
 const TEAM_ALPHA_BASE_CENTER = { x: -50, y: 2, z: 0 };
 const TEAM_BETA_BASE_CENTER = { x: 50, y: 2, z: 0 };
 const BASE_RADIUS = 10;
+
+const PLAYER_MODEL_CONFIG = Object.freeze({
+    SCALE: 1.5,
+    CAPSULE_RADIUS_FACTOR: 0.5, // Original was 0.5 * playerModelScale
+    CAPSULE_HEIGHT_FACTOR: 2.0,  // Original was 2.0 * playerModelScale
+
+    USERNAME_SPRITE_SCALE_X: 4,
+    USERNAME_SPRITE_SCALE_Y: 1.5,
+    USERNAME_OFFSET_Y_FACTOR: 2.8, // This factor will be multiplied by PLAYER_MODEL_CONFIG.SCALE
+    USERNAME_FONT_SIZE: 36,
+    USERNAME_CANVAS_WIDTH: 512,
+    USERNAME_CANVAS_HEIGHT: 128,
+    USERNAME_BG_COLOR: 'rgba(0, 0, 0, 0.9)',
+    USERNAME_BORDER_COLOR: '#ffffff',
+    USERNAME_TEXT_COLOR: '#ffffff',
+    USERNAME_BORDER_LINEWIDTH: 4,
+
+    HEALTH_BAR_BASE_WIDTH: 1.0, // Base width, will be scaled by player model scale
+    HEALTH_BAR_HEIGHT_FACTOR: 0.2, // Relative to HEALTH_BAR_BASE_WIDTH or absolute height? Let's make it absolute for now.
+    HEALTH_BAR_OFFSET_Y_FACTOR: 2.3, // Multiplied by PLAYER_MODEL_CONFIG.SCALE
+    HEALTH_BAR_BORDER_OFFSET: 0.05, // For border plane sizing
+    HEALTH_BAR_BORDER_Z_OFFSET: -0.001,
+    HEALTH_BAR_DEFAULT_COLOR: 0x00ff00, // Green
+    HEALTH_BAR_BORDER_COLOR: 0x000000,
+
+    WEAPON_INDICATOR_GEOMETRY_X: 0.08,
+    WEAPON_INDICATOR_GEOMETRY_Y: 0.08,
+    WEAPON_INDICATOR_GEOMETRY_Z: 0.4,
+    WEAPON_INDICATOR_SCALE_FACTOR: 2.0, // Applied to its own geometry factors above
+    WEAPON_INDICATOR_OFFSET_X_FACTOR: 0.3, // Multiplied by PLAYER_MODEL_CONFIG.SCALE
+    WEAPON_INDICATOR_OFFSET_Y_FACTOR: 0.5, // Multiplied by PLAYER_MODEL_CONFIG.SCALE
+    WEAPON_INDICATOR_OFFSET_Z_FACTOR: -0.4, // Multiplied by PLAYER_MODEL_CONFIG.SCALE
+    WEAPON_INDICATOR_COLOR: 0x666666,
+    WEAPON_INDICATOR_EMISSIVE: 0x0088ff,
+    WEAPON_INDICATOR_EMISSIVE_INTENSITY: 0.8,
+
+    TEAM_RING_INNER_RADIUS: 0.8,
+    TEAM_RING_OUTER_RADIUS: 1.0,
+    TEAM_RING_SEGMENTS: 16,
+    TEAM_RING_OPACITY: 0.7,
+    TEAM_RING_OFFSET_Y_FACTOR: -0.8, // Multiplied by PLAYER_MODEL_CONFIG.SCALE
+});
 const BASE_RADIUS_SQUARED = BASE_RADIUS * BASE_RADIUS; // For cheaper distance checks
 const SCORE_INTERVAL_SECONDS = 1.0; // How often to try and award points from accumulator
 
@@ -112,38 +155,54 @@ export class GameCore {
         
         this.init();
     }
-    
-    async init() {
-        this.uiManager = new UIManager(this); // UIManager needs gameCore for callbacks
+
+    _initCoreManagers() {
+        this.uiManager = new UIManager(this);
         this.audioManager = new AudioManager();
-        this.networkManager = new NetworkManager(this); // NetworkManager needs gameCore
-        this.lobbyManager = new LobbyManager(this); // LobbyManager needs gameCore (for other managers)
+        this.networkManager = new NetworkManager(this);
+        this.lobbyManager = new LobbyManager(this);
+    }
+
+    _initAuxiliaryManagers() {
+        this.inputManager = new InputManager(this);
+        this.consoleManager = new ConsoleManager(this);
+        this.streamerDataManager = new StreamerDataManager(this);
+        this.matchStatsManager = new MatchStatsManager(this);
+    }
+
+    async init() {
+        this._initCoreManagers();
         
         this.uiManager.showLoadingScreen();
         
-        await this.initializeGraphics(); // Camera is created here
-        // Initialize AudioManager with the camera AFTER the camera is created
+        // Graphics initialization must happen before AudioManager init that needs the camera
+        await this.initializeGraphics();
+
         if (this.camera && this.audioManager && typeof this.audioManager.initialize === 'function') {
             await this.audioManager.initialize(this.camera);
         } else {
             console.error("GameCore: Failed to initialize AudioManager with camera. Camera or AudioManager not ready.");
-            // Fallback or alternative initialization if needed, though camera is crucial for positional audio
-            await this.audioManager.initialize(); // Attempt basic init if camera isn't there
+            await this.audioManager.initialize();
         }
-        await this.networkManager.initialize(); // Connect to network
 
-        this.inputManager = new InputManager(this); // InputManager needs gameCore
-        this.consoleManager = new ConsoleManager(this); // ConsoleManager needs gameCore
-        this.streamerDataManager = new StreamerDataManager(this); // Instantiate StreamerDataManager
-        this.matchStatsManager = new MatchStatsManager(this); // Instantiate MatchStatsManager
+        await this.networkManager.initialize(); // Network must be initialized before FragmentManager that uses networkManager.room
 
-        // Initialization of LobbyManager AFTER other core managers it depends on (NM, UIM)
-        this.lobbyManager.initialize();
+        // FragmentManager needs networkManager.room, so initialize after networkManager.initialize()
+        this.fragmentManager = new FragmentManager(this.scene, this.networkManager.room);
+        if (this.fragmentManager) { // Check if instantiation was successful
+             // TODO: Use a constant for 'center_fragment' if it becomes a pattern
+            this.fragmentManager.createFragment('center_fragment', { x: 0, y: 5, z: 0 });
+        } else {
+            console.error("GameCore: FragmentManager instantiation failed or networkManager.room was not ready.");
+        }
+
+        this._initAuxiliaryManagers();
+
+        this.lobbyManager.initialize(); // Depends on UIManager and NetworkManager
         
         setTimeout(() => {
             this.uiManager.hideLoadingScreen();
-            this.uiManager.showMainMenu(); // Show main menu first
-            // Lobby screen will be shown when 'Join Game' is clicked (handled in UIManager)
+            this.uiManager.showMainMenu();
         }, 3000);
     }
 
@@ -179,23 +238,25 @@ export class GameCore {
         const localPlayerId = this.lobbyManager.getPlayerId();
         const localPlayerLobbyData = this.lobbyManager.lobbyPlayers[localPlayerId];
 
-        let selectedClass = 'assault'; // Default
+        let selectedClass = PLAYER_CLASSES.ASSAULT; // Default
         if (localPlayerLobbyData) {
             if (localPlayerLobbyData.teamColor) {
-                if (localPlayerLobbyData.teamColor === 'blue') this.player.team = 'alpha';
-                else if (localPlayerLobbyData.teamColor === 'red') this.player.team = 'beta';
+                // Assuming teamColor from lobby maps to TEAM_IDS.ALPHA or TEAM_IDS.BETA
+                // This mapping might need to be more robust if lobby team colors are arbitrary strings
+                if (localPlayerLobbyData.teamColor === 'blue') this.player.team = TEAM_IDS.ALPHA;
+                else if (localPlayerLobbyData.teamColor === 'red') this.player.team = TEAM_IDS.BETA;
                 else {
                     const teamKeys = Object.keys(this.networkManager.room?.peers || {});
                     const playerIndex = teamKeys.indexOf(localPlayerId);
-                    this.player.team = playerIndex >= 0 && playerIndex % 2 === 0 ? 'alpha' : 'beta';
+                    this.player.team = playerIndex >= 0 && playerIndex % 2 === 0 ? TEAM_IDS.ALPHA : TEAM_IDS.BETA;
                 }
             }
-            selectedClass = localPlayerLobbyData.playerClass || 'assault';
+            selectedClass = localPlayerLobbyData.playerClass || PLAYER_CLASSES.ASSAULT;
         } else {
             const teamCount = Object.values(this.networkManager.room?.presence || {}).length;
-            this.player.team = teamCount % 2 === 0 ? 'alpha' : 'beta';
+            this.player.team = teamCount % 2 === 0 ? TEAM_IDS.ALPHA : TEAM_IDS.BETA;
         }
-        this.player.setClass(selectedClass); // Set class, which also sets health, weapon type, ammo
+        this.player.setClass(selectedClass);
 
         // UI Updates reflect the class changes made by player.setClass
         this.uiManager.updateScoreDisplay();
@@ -206,8 +267,7 @@ export class GameCore {
         // Request pointer lock for FPS controls
         this.requestPointerLock();
         
-        // Start the game loop
-        this.gameLoop();
+        // Game loop is now driven by animate()
         
         // Initialize team-based UI
         this.uiManager.updatePlayerList();
@@ -286,119 +346,134 @@ export class GameCore {
         return this.endGameScreenshotDataUrl;
     }
 
-    async initializeGraphics() {
+    _setupThreeJS() {
         const canvas = document.getElementById('game-canvas');
-        
         this.scene = new THREE.Scene();
-        this.scene.fog = new THREE.Fog(0x000000, 20, 150);
+        this.scene.fog = new THREE.Fog(0x000000, 20, 150); // TODO: Use constants for fog values
         
         this.camera = new THREE.PerspectiveCamera(
-            75,
-            window.innerWidth / window.innerHeight,
-            0.1,
-            1000
+            75, // FOV // TODO: Use constant
+            window.innerWidth / window.innerHeight, // Aspect Ratio
+            0.1, // Near plane // TODO: Use constant
+            1000 // Far plane // TODO: Use constant
         );
+        // Player is created in GameCore constructor, so this.player.position is available
         this.camera.position.copy(this.player.position);
+        this.camera.position.y += this.player.cameraOffsetY; // Adjust for player height
         
         this.renderer = new THREE.WebGLRenderer({ 
             canvas: canvas,
             antialias: true 
         });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.setClearColor(0x000011);
+        this.renderer.setClearColor(0x000011); // TODO: Use constant for clear color
         this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Default
         this.renderer.outputEncoding = THREE.sRGBEncoding;
         this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        this.renderer.toneMappingExposure = 1.0;
+        this.renderer.toneMappingExposure = 1.0; // TODO: Use constant
         this.renderer.physicallyCorrectLights = true;
-        
+    }
+
+    async _loadCoreGameAssets() {
         this.environment = new Environment(this.scene);
         await this.environment.create();
         
         this.treasureMapManager = new TreasureMapManager(this.scene, this.networkManager);
         this.environment.setTreasureMapManager(this.treasureMapManager);
         
-        this.player.setEnvironment(this.environment);
-        
-        this.fragmentManager = new FragmentManager(this.scene, this.networkManager.room);
-        this.fragmentManager.createFragment('center_fragment', { x: 0, y: 5, z: 0 });
+        // FragmentManager is now initialized in init() after NetworkManager
+    }
+
+    async _setupPlayerAndWeaponSystems() {
+        if (this.player && this.environment) {
+            this.player.setEnvironment(this.environment);
+        } else {
+            console.error("GameCore: Player or Environment not ready for linking in _setupPlayerAndWeaponSystems.");
+        }
         
         this.weaponManager = new WeaponManager(this.scene, this.camera, this.player, this.audioManager);
-        await this.weaponManager.loadWeaponModel();
+        if (this.weaponManager && typeof this.weaponManager.loadWeaponModel === 'function') {
+            await this.weaponManager.loadWeaponModel();
+        }
+
+        // Pass gameCore directly to EffectsManager if it needs more than just scene, gameState, environment
+        this.effectsManager = new EffectsManager(this.scene, this.gameState, this.environment /*, this.gameCore */);
+    }
+
+    async initializeGraphics() {
+        this._setupThreeJS();
+
+        await this._loadCoreGameAssets();
         
-        this.effectsManager = new EffectsManager(this.scene, this.gameState, this.environment);
+        await this._setupPlayerAndWeaponSystems();
         
-        // Initialize multiplayer player rendering
-        this.initializeMultiplayerRendering();
+        this._initializeMultiplayerRendering(); // Renamed for consistency
         
-        this.animate();
+        this.animate(performance.now());
     }
     
-    initializeMultiplayerRendering() {
+    _initializeMultiplayerRendering() { // Renamed
         /* @tweakable multiplayer player model appearance */
         this.playerGeometry = new THREE.CapsuleGeometry(0.3, 1.4, 4, 8);
         this.createPlayerMaterials();
     }
     
-    createPlayerMaterials() {
-        /* @tweakable team colors for multiplayer player models */
+    _createPlayerMaterials() { // Renamed
         this.playerMaterials = {
-            alpha: new THREE.MeshStandardMaterial({
-                color: 0x00aaff,
+            [TEAM_IDS.ALPHA]: new THREE.MeshStandardMaterial({
+                color: 0x00aaff, // Blue
                 metalness: 0.3,
                 roughness: 0.7,
                 emissive: 0x004466,
                 emissiveIntensity: 0.2
             }),
-            beta: new THREE.MeshStandardMaterial({
-                color: 0xff6600,
+            [TEAM_IDS.BETA]: new THREE.MeshStandardMaterial({
+                color: 0xff6600, // Orange
                 metalness: 0.3,
                 roughness: 0.7,
                 emissive: 0x664400,
                 emissiveIntensity: 0.2
+            }),
+            [TEAM_IDS.NONE]: new THREE.MeshStandardMaterial({ // Fallback/Neutral
+                color: 0x888888,
+                metalness: 0.3,
+                roughness: 0.7,
+                emissive: 0x333333,
+                emissiveIntensity: 0.1
             })
         };
     }
     
     createPlayerModel(playerId, playerData) {
-        /* @tweakable multiplayer player model size for enhanced visibility */
-        const playerModelScale = 1.5; // Increased from 1.2 for better visibility
-        const playerGeometry = new THREE.CapsuleGeometry(0.5 * playerModelScale, 2.0 * playerModelScale, 4, 8); // Increased dimensions
+        const playerModelScale = PLAYER_MODEL_CONFIG.SCALE;
+        const playerCapsuleRadius = PLAYER_MODEL_CONFIG.CAPSULE_RADIUS_FACTOR * playerModelScale;
+        const playerCapsuleHeight = PLAYER_MODEL_CONFIG.CAPSULE_HEIGHT_FACTOR * playerModelScale;
+        const playerGeometry = new THREE.CapsuleGeometry(playerCapsuleRadius, playerCapsuleHeight, 4, 8);
+
+        const teamMaterialKey = playerData.team && Object.values(TEAM_IDS).includes(playerData.team) ? playerData.team : TEAM_IDS.NONE;
+        const teamMaterial = this.playerMaterials[teamMaterialKey] || this.playerMaterials[TEAM_IDS.NONE];
         
-        const teamMaterial = this.playerMaterials[playerData.team] || this.playerMaterials.alpha;
-        /* @tweakable multiplayer player material properties for better visibility */
         const enhancedMaterial = teamMaterial.clone();
-        enhancedMaterial.emissiveIntensity = 0.6; // Increased glow
-        enhancedMaterial.metalness = 0.1; // Reduced metalness for better color visibility
-        enhancedMaterial.roughness = 0.8; // Increased roughness for better diffuse lighting
+        enhancedMaterial.emissiveIntensity = 0.6;
+        enhancedMaterial.metalness = 0.1;
+        enhancedMaterial.roughness = 0.8;
         
         const playerMesh = new THREE.Mesh(playerGeometry, enhancedMaterial);
-        playerMesh.userData = { playerId, type: 'player' };
+        playerMesh.userData = { playerId, type: 'player' }; // TODO: Use constant for type: 'player' if defined
         playerMesh.castShadow = true;
         playerMesh.receiveShadow = true;
         
-        // Create username label above player
-        const usernameSprite = this.createUsernameSprite(this.networkManager.room.peers[playerId]?.username || 'Unknown');
-        /* @tweakable username label positioning for better multiplayer identification */
-        usernameSprite.position.set(0, 2.8 * playerModelScale, 0); // Increased height
+        const usernameSprite = this._createPlayerUsernameSprite(this.networkManager.room.peers[playerId]?.username || 'Unknown');
         playerMesh.add(usernameSprite);
         
-        // Create health bar above username
-        const healthBar = this.createHealthBar();
-        /* @tweakable health bar positioning for better multiplayer visibility */
-        healthBar.position.set(0, 2.3 * playerModelScale, 0); // Adjusted height
+        const healthBar = this._createPlayerHealthBar();
         playerMesh.add(healthBar);
         
-        // Add weapon indicator if they have one
-        const weaponIndicator = this.createWeaponIndicator();
-        /* @tweakable weapon indicator positioning for enhanced H20pew visibility */
-        weaponIndicator.position.set(0.3 * playerModelScale, 0.5 * playerModelScale, -0.4 * playerModelScale);
+        const weaponIndicator = this._createPlayerWeaponIndicator();
         playerMesh.add(weaponIndicator);
         
-        // Add team indicator ring around base
-        const teamRing = this.createTeamIndicatorRing(playerData.team);
-        teamRing.position.set(0, -0.8 * playerModelScale, 0);
+        const teamRing = this._createPlayerTeamRing(playerData.team);
         playerMesh.add(teamRing);
         
         this.scene.add(playerMesh);
@@ -408,105 +483,117 @@ export class GameCore {
             healthBar,
             weaponIndicator,
             teamRing,
-            lastUpdate: Date.now()
+            lastUpdate: Date.now(),
+            playerClass: playerData.playerClass, // Store for reference
+            maxHealth: playerData.maxHealth,     // Store for reference
+            isSpeaking: !!playerData.isSpeaking, // Ensure boolean
+            hasFragment: !!playerData.hasFragment // Ensure boolean
         });
         
         console.log(`Created player model for ${playerId} on team ${playerData.team}`);
         return playerMesh;
     }
     
-    createTeamIndicatorRing(team) {
-        /* @tweakable team indicator ring for enhanced team identification */
-        const ringGeometry = new THREE.RingGeometry(0.8, 1.0, 16);
-        const ringColor = team === 'alpha' ? 0x00aaff : 0xff6600;
+    _createPlayerTeamRing(team) { // Renamed
+        const ringGeometry = new THREE.RingGeometry(
+            PLAYER_MODEL_CONFIG.TEAM_RING_INNER_RADIUS,
+            PLAYER_MODEL_CONFIG.TEAM_RING_OUTER_RADIUS,
+            PLAYER_MODEL_CONFIG.TEAM_RING_SEGMENTS
+        );
+        const ringColor = team === TEAM_IDS.ALPHA ? 0x00aaff : (team === TEAM_IDS.BETA ? 0xff6600 : 0x888888);
         const ringMaterial = new THREE.MeshBasicMaterial({
             color: ringColor,
             transparent: true,
-            opacity: 0.7,
+            opacity: PLAYER_MODEL_CONFIG.TEAM_RING_OPACITY,
             side: THREE.DoubleSide
         });
         
         const ring = new THREE.Mesh(ringGeometry, ringMaterial);
         ring.rotation.x = Math.PI / 2;
+        ring.position.set(0, PLAYER_MODEL_CONFIG.TEAM_RING_OFFSET_Y_FACTOR * PLAYER_MODEL_CONFIG.SCALE, 0);
         return ring;
     }
     
-    createUsernameSprite(username) {
-        /* @tweakable username display properties for enhanced multiplayer visibility */
-        const canvasWidth = 512;
-        const canvasHeight = 128;
-        const fontSize = 36; // Increased from 32
-        
+    _createPlayerUsernameSprite(username) { // Renamed
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
-        canvas.width = canvasWidth;
-        canvas.height = canvasHeight;
+        canvas.width = PLAYER_MODEL_CONFIG.USERNAME_CANVAS_WIDTH;
+        canvas.height = PLAYER_MODEL_CONFIG.USERNAME_CANVAS_HEIGHT;
         
-        context.fillStyle = 'rgba(0, 0, 0, 0.9)'; // More opaque background
+        context.fillStyle = PLAYER_MODEL_CONFIG.USERNAME_BG_COLOR;
         context.fillRect(0, 0, canvas.width, canvas.height);
         
-        // Add border
-        context.strokeStyle = '#ffffff';
-        context.lineWidth = 4;
-        context.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
+        context.strokeStyle = PLAYER_MODEL_CONFIG.USERNAME_BORDER_COLOR;
+        context.lineWidth = PLAYER_MODEL_CONFIG.USERNAME_BORDER_LINEWIDTH;
+        context.strokeRect(
+            PLAYER_MODEL_CONFIG.USERNAME_BORDER_LINEWIDTH / 2,
+            PLAYER_MODEL_CONFIG.USERNAME_BORDER_LINEWIDTH / 2,
+            canvas.width - PLAYER_MODEL_CONFIG.USERNAME_BORDER_LINEWIDTH,
+            canvas.height - PLAYER_MODEL_CONFIG.USERNAME_BORDER_LINEWIDTH
+        );
         
-        context.fillStyle = '#ffffff';
-        context.font = `bold ${fontSize}px Arial`;
+        context.fillStyle = PLAYER_MODEL_CONFIG.USERNAME_TEXT_COLOR;
+        context.font = `bold ${PLAYER_MODEL_CONFIG.USERNAME_FONT_SIZE}px Arial`;
         context.textAlign = 'center';
-        context.fillText(username, canvas.width / 2, canvas.height / 2 + fontSize / 3);
+        context.fillText(username, canvas.width / 2, canvas.height / 2 + PLAYER_MODEL_CONFIG.USERNAME_FONT_SIZE / 3);
         
         const texture = new THREE.CanvasTexture(canvas);
         const spriteMaterial = new THREE.SpriteMaterial({ map: texture });
         const sprite = new THREE.Sprite(spriteMaterial);
-        /* @tweakable username sprite scale for enhanced multiplayer visibility */
-        sprite.scale.set(4, 1.5, 1); // Increased width and height
-        
+        sprite.scale.set(PLAYER_MODEL_CONFIG.USERNAME_SPRITE_SCALE_X, PLAYER_MODEL_CONFIG.USERNAME_SPRITE_SCALE_Y, 1);
+        sprite.position.set(0, PLAYER_MODEL_CONFIG.USERNAME_OFFSET_Y_FACTOR * PLAYER_MODEL_CONFIG.SCALE, 0);
         return sprite;
     }
     
-    createHealthBar() {
-        /* @tweakable health bar appearance for enhanced multiplayer visibility */
-        const barWidth = 2.0; // Increased from 1.5
-        const barHeight = 0.2; // Increased from 0.15
+    _createPlayerHealthBar() { // Renamed
+        const barWidth = PLAYER_MODEL_CONFIG.HEALTH_BAR_BASE_WIDTH * PLAYER_MODEL_CONFIG.SCALE;
+        const barHeight = PLAYER_MODEL_CONFIG.HEALTH_BAR_HEIGHT_FACTOR; // Assuming this is an absolute height now
         
         const geometry = new THREE.PlaneGeometry(barWidth, barHeight);
         const material = new THREE.MeshBasicMaterial({
-            color: 0x00ff00,
+            color: PLAYER_MODEL_CONFIG.HEALTH_BAR_DEFAULT_COLOR,
             transparent: true,
-            opacity: 0.95 // More opaque
+            opacity: 0.95
         });
         
         const healthBar = new THREE.Mesh(geometry, material);
-        healthBar.userData = { type: 'healthBar', maxWidth: barWidth };
+        healthBar.userData = { type: 'healthBar', maxWidth: barWidth }; // maxWidth is now scaled
         
-        // Add border to health bar
-        const borderGeometry = new THREE.PlaneGeometry(barWidth + 0.1, barHeight + 0.05);
+        const borderGeometry = new THREE.PlaneGeometry(
+            barWidth + PLAYER_MODEL_CONFIG.HEALTH_BAR_BORDER_OFFSET,
+            barHeight + PLAYER_MODEL_CONFIG.HEALTH_BAR_BORDER_OFFSET
+        );
         const borderMaterial = new THREE.MeshBasicMaterial({
-            color: 0x000000,
+            color: PLAYER_MODEL_CONFIG.HEALTH_BAR_BORDER_COLOR,
             transparent: true,
             opacity: 0.8
         });
         const border = new THREE.Mesh(borderGeometry, borderMaterial);
-        border.position.z = -0.001;
+        border.position.z = PLAYER_MODEL_CONFIG.HEALTH_BAR_BORDER_Z_OFFSET;
         healthBar.add(border);
-        
+        healthBar.position.set(0, PLAYER_MODEL_CONFIG.HEALTH_BAR_OFFSET_Y_FACTOR * PLAYER_MODEL_CONFIG.SCALE, 0);
         return healthBar;
     }
     
-    createWeaponIndicator() {
-        /* @tweakable weapon indicator size for enhanced multiplayer visibility */
-        const weaponScale = 2.0; // Increased from 1.5
-        const geometry = new THREE.BoxGeometry(0.08 * weaponScale, 0.08 * weaponScale, 0.4 * weaponScale);
+    _createPlayerWeaponIndicator() { // Renamed
+        const geomX = PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_GEOMETRY_X * PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_SCALE_FACTOR;
+        const geomY = PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_GEOMETRY_Y * PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_SCALE_FACTOR;
+        const geomZ = PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_GEOMETRY_Z * PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_SCALE_FACTOR;
+        const geometry = new THREE.BoxGeometry(geomX, geomY, geomZ);
         const material = new THREE.MeshStandardMaterial({
-            color: 0x666666,
+            color: PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_COLOR,
             metalness: 0.8,
             roughness: 0.2,
-            /* @tweakable weapon indicator glow for enhanced multiplayer visibility */
-            emissive: 0x0088ff,
-            emissiveIntensity: 0.8 // Increased glow
+            emissive: PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_EMISSIVE,
+            emissiveIntensity: PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_EMISSIVE_INTENSITY
         });
-        
-        return new THREE.Mesh(geometry, material);
+        const indicator = new THREE.Mesh(geometry, material);
+        indicator.position.set(
+            PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_OFFSET_X_FACTOR * PLAYER_MODEL_CONFIG.SCALE,
+            PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_OFFSET_Y_FACTOR * PLAYER_MODEL_CONFIG.SCALE,
+            PLAYER_MODEL_CONFIG.WEAPON_INDICATOR_OFFSET_Z_FACTOR * PLAYER_MODEL_CONFIG.SCALE
+        );
+        return indicator;
     }
     
     updateOtherPlayers() {
@@ -554,23 +641,21 @@ export class GameCore {
         }
     }
     
-    updatePlayerModel(playerId, presence) {
-        const playerObject = this.otherPlayers.get(playerId);
-        if (!playerObject) return;
-        
-        // Store class and maxHealth if present in presence update
+    // --- Private Helper Methods for updatePlayerModel ---
+    _updateRemotePlayerStateProps(playerObject, presence) {
         if (presence.playerClass) {
             playerObject.playerClass = presence.playerClass;
         }
         if (presence.maxHealth) {
             playerObject.maxHealth = presence.maxHealth;
         }
+    }
 
-        // Handle speaking indicator update
-        const oldIsSpeaking = playerObject.isSpeaking; // Store previous state
-        playerObject.isSpeaking = !!presence.isSpeaking; // Update to new state, ensuring boolean
+    _updateRemotePlayerSpeakingEffects(playerId, playerObject, presence) {
+        const oldIsSpeaking = playerObject.isSpeaking;
+        playerObject.isSpeaking = !!presence.isSpeaking;
 
-        if (playerObject.isSpeaking !== oldIsSpeaking && playerObject.mesh) { // If state changed and mesh exists
+        if (playerObject.isSpeaking !== oldIsSpeaking && playerObject.mesh) {
             if (this.effectsManager && typeof this.effectsManager.setPlayerSpeakingIndicator === 'function') {
                 this.effectsManager.setPlayerSpeakingIndicator(playerId, playerObject.isSpeaking, playerObject.mesh);
             }
@@ -578,107 +663,156 @@ export class GameCore {
                 this.audioManager.setPlayerSpatialTalkingSound(playerId, playerObject.isSpeaking, playerObject.mesh);
             }
         }
+    }
 
+    _updateRemotePlayerTransform(playerObject, presence) {
+        const mesh = playerObject.mesh;
+        if (!mesh) return;
 
-        const { mesh, healthBar, weaponIndicator, teamRing } = playerObject;
-        
-        // Update position with enhanced interpolation
         if (presence.position) {
-            /* @tweakable multiplayer position sync smoothness for better tracking */
-            const lerpFactor = 0.15; // Slightly reduced for smoother movement
-            const targetPosition = new THREE.Vector3(...presence.position);
+            const lerpFactor = 0.15;
+            const targetPosition = Array.isArray(presence.position) ? new THREE.Vector3(...presence.position) : new THREE.Vector3(presence.position.x, presence.position.y, presence.position.z);
             mesh.position.lerp(targetPosition, lerpFactor);
         }
-        
-        // Update rotation with smoothing
         if (presence.rotation) {
-            /* @tweakable multiplayer rotation sync smoothness */
-            const targetRotationY = presence.rotation[1];
-            mesh.rotation.y = THREE.MathUtils.lerp(mesh.rotation.y, targetRotationY, 0.2);
+            const targetRotationY = Array.isArray(presence.rotation) ? presence.rotation[1] : presence.rotation.y;
+            if (targetRotationY !== undefined) {
+                 mesh.rotation.y = THREE.MathUtils.lerp(mesh.rotation.y, targetRotationY, 0.2);
+            }
         }
-        
-        // Update health bar with enhanced visibility
+    }
+
+    _updateRemotePlayerHealthBar(playerObject, presence) {
+        if (!playerObject.healthBar) return;
+        const healthBar = playerObject.healthBar;
         if (presence.health !== undefined) {
-            const maxHealth = playerObject.maxHealth || 100; // Use stored maxHealth from playerObject
-            const healthPercent = Math.max(0.05, presence.health / maxHealth);
+            const maxHealth = playerObject.maxHealth || 100;
+            const healthPercent = Math.max(0, Math.min(1, presence.health / maxHealth));
             healthBar.scale.x = healthPercent;
-            
-            // Enhanced color coding based on health
-            if (healthPercent > 0.7) {
-                healthBar.material.color.setHex(0x00ff00);
-            } else if (healthPercent > 0.4) {
-                healthBar.material.color.setHex(0xffff00);
-            } else if (healthPercent > 0.2) {
-                healthBar.material.color.setHex(0xff8800);
-            } else {
-                healthBar.material.color.setHex(0xff0000);
+
+            if (healthPercent > 0.7) healthBar.material.color.setHex(0x00ff00); // Green
+            else if (healthPercent > 0.4) healthBar.material.color.setHex(0xffff00); // Yellow
+            else if (healthPercent > 0.15) healthBar.material.color.setHex(0xff8800); // Orange
+            else healthBar.material.color.setHex(0xff0000); // Red
+        }
+    }
+
+    _updateRemotePlayerTeamVisuals(playerObject, presence) {
+        const mesh = playerObject.mesh;
+        if (!mesh || !mesh.material) return; // Ensure mesh and its material exist
+
+        const teamId = presence.team;
+        if (teamId && this.playerMaterials[teamId]) {
+            // Only clone and assign if material is different to avoid unnecessary operations
+            if (mesh.material.uuid !== this.playerMaterials[teamId].uuid && mesh.material.name !== this.playerMaterials[teamId].name) {
+                mesh.material = this.playerMaterials[teamId].clone();
+                mesh.material.name = this.playerMaterials[teamId].name; // Keep name for potential future checks
+            }
+            mesh.material.emissiveIntensity = (this.player && teamId === this.player.team) ? 0.8 : 0.6;
+        } else if (this.playerMaterials[TEAM_IDS.NONE]) { // Fallback for undefined or invalid team
+            if (mesh.material.uuid !== this.playerMaterials[TEAM_IDS.NONE].uuid && mesh.material.name !== this.playerMaterials[TEAM_IDS.NONE].name) {
+                mesh.material = this.playerMaterials[TEAM_IDS.NONE].clone();
+                mesh.material.name = this.playerMaterials[TEAM_IDS.NONE].name;
+            }
+            mesh.material.emissiveIntensity = 0.3;
+        }
+
+        if (playerObject.teamRing && playerObject.teamRing.material) {
+            const ringColorHex = teamId === TEAM_IDS.ALPHA ? 0x00aaff : (teamId === TEAM_IDS.BETA ? 0xff6600 : 0x888888);
+            if (playerObject.teamRing.material.color.getHex() !== ringColorHex) {
+                 playerObject.teamRing.material.color.setHex(ringColorHex);
             }
         }
-        
-        // Update team material with enhanced visibility
-        if (presence.team && this.playerMaterials[presence.team]) {
-            mesh.material = this.playerMaterials[presence.team].clone();
-            /* @tweakable team identification glow for enhanced multiplayer visibility */
-            mesh.material.emissiveIntensity = presence.team === this.player.team ? 0.8 : 0.6;
-            
-            // Update team ring
-            if (teamRing) {
-                const ringColor = presence.team === 'alpha' ? 0x00aaff : 0xff6600;
-                teamRing.material.color.setHex(ringColor);
-            }
+    }
+
+    _updateRemotePlayerDeadVisuals(playerObject, presence) {
+        const mesh = playerObject.mesh;
+        if (!mesh || !mesh.material) return;
+
+        const targetVisible = !presence.dead;
+        if (mesh.visible !== targetVisible) {
+            mesh.visible = targetVisible;
         }
-        
-        // Enhanced visibility for dead players
-        mesh.visible = !presence.dead;
+
         if (presence.dead) {
-            /* @tweakable dead player transparency for multiplayer feedback */
-            mesh.material.opacity = 0.3;
-            mesh.material.transparent = true;
+            if (!mesh.material.transparent || mesh.material.opacity !== 0.3) {
+                mesh.material.transparent = true;
+                mesh.material.opacity = 0.3;
+            }
         } else {
-            mesh.material.opacity = 1.0;
-            mesh.material.transparent = false;
+            if (mesh.material.transparent || mesh.material.opacity !== 1.0) {
+                mesh.material.transparent = false;
+                mesh.material.opacity = 1.0;
+            }
         }
-        
-        // Update weapon visibility for H20pew
-        if (weaponIndicator) {
-            weaponIndicator.visible = presence.weaponVisible && !presence.dead;
-            /* @tweakable H20pew weapon indicator glow for enhanced multiplayer visibility */
-            weaponIndicator.material.emissiveIntensity = presence.weaponVisible ? 1.0 : 0.3;
+    }
+
+    _updateRemotePlayerWeaponIndicator(playerObject, presence) {
+        if (!playerObject.weaponIndicator) return;
+        const targetVisible = !!presence.weaponVisible && !presence.dead;
+        if (playerObject.weaponIndicator.visible !== targetVisible) {
+             playerObject.weaponIndicator.visible = targetVisible;
         }
-        
-        // Enhanced fragment indicator with better visual feedback
+        if (playerObject.weaponIndicator.material) {
+             playerObject.weaponIndicator.material.emissiveIntensity = targetVisible ? 1.0 : 0.3;
+        }
+    }
+
+    _updateRemotePlayerFragmentEffects(playerObject, presence) {
+        const mesh = playerObject.mesh;
+        if (!mesh || !mesh.material) return;
+
         if (presence.hasFragment) {
-            /* @tweakable fragment carrier visibility effect for enhanced multiplayer feedback */
-            const fragmentGlowIntensity = 1.5; // Increased intensity
-            mesh.material.emissiveIntensity = fragmentGlowIntensity + Math.sin(Date.now() * 0.008) * 0.8;
+            const fragmentGlowIntensityBase = 1.5;
+            mesh.material.emissiveIntensity = fragmentGlowIntensityBase + Math.sin(Date.now() * 0.008) * 0.8;
             
-            // Add pulsing scale effect
-            const pulseScale = 1 + Math.sin(Date.now() * 0.01) * 0.2;
+            const pulseScaleBase = 1.0;
+            const pulseMagnitude = 0.1;
+            const pulseScale = pulseScaleBase + Math.sin(Date.now() * 0.01) * pulseMagnitude;
             mesh.scale.setScalar(pulseScale);
-            
-            // Add fragment aura effect
+
             if (!mesh.userData.fragmentAura) {
-                const auraGeometry = new THREE.SphereGeometry(3);
+                const auraGeometry = new THREE.SphereGeometry(2.5, 16, 16);
                 const auraMaterial = new THREE.MeshBasicMaterial({
-                    color: 0xffdd00,
-                    transparent: true,
-                    opacity: 0.2,
-                    side: THREE.DoubleSide
+                    color: 0xffdd00, transparent: true, opacity: 0.15,
+                    side: THREE.DoubleSide, depthWrite: false
                 });
                 mesh.userData.fragmentAura = new THREE.Mesh(auraGeometry, auraMaterial);
                 mesh.add(mesh.userData.fragmentAura);
             }
         } else {
-            mesh.material.emissiveIntensity = 0.6;
-            mesh.scale.setScalar(1);
-            
-            // Remove fragment aura
+            // Emissive intensity reset is typically handled by _updateRemotePlayerTeamVisuals if team hasn't changed.
+            // If team also changed, that method would set it. If not, it might need to be reset here.
+            // For simplicity, assuming team visuals or other default state setters will handle base emissive intensity.
+            if (Math.abs(mesh.scale.x - 1.0) > 0.01) {
+                mesh.scale.setScalar(1.0);
+            }
             if (mesh.userData.fragmentAura) {
                 mesh.remove(mesh.userData.fragmentAura);
+                if (mesh.userData.fragmentAura.geometry) mesh.userData.fragmentAura.geometry.dispose();
+                if (mesh.userData.fragmentAura.material) mesh.userData.fragmentAura.material.dispose();
                 mesh.userData.fragmentAura = null;
             }
         }
-        
+    }
+    // --- End of Private Helper Methods ---
+
+    updatePlayerModel(playerId, presence) {
+        const playerObject = this.otherPlayers.get(playerId);
+        if (!playerObject || !playerObject.mesh) { // Check for mesh early as many helpers depend on it
+            // console.warn(`updatePlayerModel: No playerObject or mesh found for ID ${playerId}`);
+            return;
+        }
+
+        this._updateRemotePlayerStateProps(playerObject, presence);
+        this._updateRemotePlayerSpeakingEffects(playerId, playerObject, presence);
+        this._updateRemotePlayerTransform(playerObject, presence);
+        this._updateRemotePlayerHealthBar(playerObject, presence); // Helper checks for healthBar
+        this._updateRemotePlayerTeamVisuals(playerObject, presence); // Helper checks for material & teamRing
+        this._updateRemotePlayerDeadVisuals(playerObject, presence); // Helper checks for material
+        this._updateRemotePlayerWeaponIndicator(playerObject, presence); // Helper checks for weaponIndicator
+        this._updateRemotePlayerFragmentEffects(playerObject, presence); // Helper checks for material
+
         playerObject.lastUpdate = Date.now();
     }
     
@@ -793,12 +927,12 @@ export class GameCore {
         });
         
         this.networkManager.send({
-            type: 'fragment_collected',
+            type: MESSAGE_TYPES.FRAGMENT_COLLECTED,
             playerId: this.networkManager.room.clientId,
             team: this.player.team
         });
         
-        this.audioManager.playSound('collect');
+        this.audioManager.playSound('collect'); // TODO: Use SOUND_KEYS constant e.g. SOUND_KEYS.COLLECT_FRAGMENT
         this.addCorruption(2);
     }
     
@@ -1048,7 +1182,7 @@ export class GameCore {
         
         // Add network sync for multiplayer chaos events
         this.networkManager.send({
-            type: 'chaos_event_triggered',
+            type: MESSAGE_TYPES.CHAOS_EVENT_TRIGGERED, // Ensure CHAOS_EVENT_TRIGGERED is in MESSAGE_TYPES
             eventName: selectedEvent.name,
             duration: selectedEvent.duration,
             triggerTime: currentTime
@@ -1058,9 +1192,15 @@ export class GameCore {
     }
     
     randomizeAllWeapons() {
-        const weapons = ['assault', 'scout', 'heavy'];
-        const randomWeapon = weapons[Math.floor(Math.random() * weapons.length)];
-        this.handleWeaponSwitch(randomWeapon);
+        const weaponTypesArray = Object.values(PLAYER_CLASSES); // Player class implies a default weapon type.
+        const randomPlayerClass = weaponTypesArray[Math.floor(Math.random() * weaponTypesArray.length)];
+        this.player.setClass(randomPlayerClass); // This will set player's weaponType and update UI via Player.setClass
+        // If direct weapon switching without class change is needed, handleWeaponSwitch should take a WEAPON_TYPES value.
+        // For now, randomizing class implies randomizing weapon.
+        if (this.uiManager) { // Ensure UI is updated if setClass doesn't cover it fully.
+            this.uiManager.updateAmmoDisplay();
+            this.uiManager.updateWeaponDisplay(this.player.weaponType);
+        }
     }
     
     handleInteraction() {
@@ -1154,10 +1294,10 @@ export class GameCore {
     
     respawnPlayer(initialSpawn = false) {
         let spawnPoint;
-        if (this.player.team === 'alpha') {
+        if (this.player.team === TEAM_IDS.ALPHA) {
             spawnPoint = TEAM_ALPHA_SPAWN_POINTS[alphaSpawnIndex % TEAM_ALPHA_SPAWN_POINTS.length];
             alphaSpawnIndex++;
-        } else if (this.player.team === 'beta') {
+        } else if (this.player.team === TEAM_IDS.BETA) {
             spawnPoint = TEAM_BETA_SPAWN_POINTS[betaSpawnIndex % TEAM_BETA_SPAWN_POINTS.length];
             betaSpawnIndex++;
         } else {
@@ -1191,17 +1331,14 @@ export class GameCore {
         this.networkManager.updatePresence(this.player.getPresenceData());
     }
     
-    gameLoop() {
-        if (!this.gameState.isGameStarted) return;
+    // Renamed gameLoop to updateGameLogic and adjusted deltaTime usage
+    updateGameLogic(currentTime, deltaTime) { // deltaTime is now passed in seconds
+        const justPressedActions = this.inputManager.exportAndResetJustPressedActions();
         
-        const currentTime = performance.now();
-        const deltaTime = (currentTime - (this.lastTime || currentTime)) / 1000;
-        this.lastTime = currentTime;
-        
-        this.player.updateMovement(this.inputManager.controls, this.camera, deltaTime);
+        // Pass both held states (controls) and just-pressed actions to player
+        this.player.updateStateAndMovement(deltaTime, this.inputManager.controls, this.camera, justPressedActions);
         this.fragmentManager.animateFragment(currentTime / 1000);
         
-        // Update multiplayer player rendering (this calls updatePlayerModel)
         this.updateOtherPlayers();
         
         // Update weapon recoil
@@ -1229,8 +1366,7 @@ export class GameCore {
         if (this.streamerDataManager) {
             this.streamerDataManager.update(); // Update streamer data
         }
-
-        requestAnimationFrame(() => this.gameLoop());
+        // No requestAnimationFrame here anymore
     }
     
     // checkFragmentPickup() { // Replaced by handleFragmentInteractionSetup and player.collectFragment() via input
@@ -1335,12 +1471,23 @@ export class GameCore {
         console.log("No specific interaction found for 'F' key press at this moment.");
     }
     
-    animate() {
+    animate(currentTime) { // currentTime will be provided by requestAnimationFrame
+        if (!this.lastTime) { // Initialize lastTime if it's the first frame
+            this.lastTime = currentTime;
+        }
+        const deltaTime = (currentTime - this.lastTime) / 1000; // deltaTime in seconds
+
+        if (this.gameState.isGameStarted) {
+            // Call the game logic update function, passing deltaTime
+            this.updateGameLogic(currentTime, deltaTime);
+        }
+
         if (this.renderer && this.scene && this.camera) {
             this.renderer.render(this.scene, this.camera);
         }
         
-        requestAnimationFrame(() => this.animate());
+        this.lastTime = currentTime;
+        requestAnimationFrame((time) => this.animate(time)); // Pass time to next frame
     }
     
     handleResize() {
@@ -1376,162 +1523,27 @@ export class GameCore {
         return this.gameState.checkWinCondition();
     }
 
-    updateScoreOverTime(deltaTime) {
+    updateScoreOverTime(deltaTime) { // deltaTime is in seconds
         if (!this.gameState.isGameStarted || !this.networkManager || !this.networkManager.room || !this.fragmentManager) {
             return;
         }
-
-        // Determine who is responsible for scoring logic
-        let isScoringClient = false;
-        const clientId = this.networkManager.room.clientId;
-
-        if (this.gameState.chaosInfluencerId) {
-            isScoringClient = (clientId === this.gameState.chaosInfluencerId);
-        } else {
-            // Fallback: client with the lowest ID is responsible
-            const peers = this.networkManager.room.peers || {};
-            let lowestId = clientId; // Start with own ID
-            for (const peerId in peers) {
-                if (peerId < lowestId) {
-                    lowestId = peerId;
-                }
-            }
-            isScoringClient = (clientId === lowestId);
+        if (!this.isAuthoritativeClient()) {
+            return;
         }
 
-        if (!isScoringClient) {
-            return; // This client is not responsible for calculating scores
-        }
-
-        const fragmentState = this.fragmentManager.getFragmentState('center_fragment');
+        const deltaTimeMs = deltaTime * 1000;
+        const fragmentState = this.fragmentManager.getFragmentState('center_fragment'); // TODO: Use constant for fragment ID
 
         if (fragmentState && fragmentState.isCollected && fragmentState.carrierId) {
             const carrierPresence = this.networkManager.room.presence[fragmentState.carrierId];
-
-            if (carrierPresence && !carrierPresence.isDead) { // Ensure carrier is alive
-                const carrierPosition = carrierPresence.position; // Expected to be {x,y,z} or [x,y,z]
-                const carrierTeam = carrierPresence.team;
-
-                const isCarrierInAlphaBase = distanceSquared(carrierPosition, TEAM_ALPHA_BASE_CENTER) < BASE_RADIUS_SQUARED;
-                const isCarrierInBetaBase = distanceSquared(carrierPosition, TEAM_BETA_BASE_CENTER) < BASE_RADIUS_SQUARED;
-
-                let pointsPerSecond = 0;
-                let teamToScore = null;
-
-                if (carrierTeam === 'alpha') {
-                    if (isCarrierInAlphaBase) { pointsPerSecond = 3; teamToScore = 'alpha'; }
-                    else if (isCarrierInBetaBase) { pointsPerSecond = 1; teamToScore = 'alpha'; }
-                } else if (carrierTeam === 'beta') {
-                    if (isCarrierInBetaBase) { pointsPerSecond = 3; teamToScore = 'beta'; }
-                    else if (isCarrierInAlphaBase) { pointsPerSecond = 1; teamToScore = 'beta'; }
-                }
-
-                if (pointsPerSecond > 0 && teamToScore) {
-                    const dtSeconds = deltaTime; // Assuming deltaTime from gameLoop is already in seconds. If in ms, divide by 1000.
-                                               // The existing gameLoop passes (currentTime - lastTime) / 1000, so it is in seconds.
-
-                    if (teamToScore === 'alpha') {
-                        this.gameState.alphaScoreAccumulator += pointsPerSecond * dtSeconds;
-                        if (this.gameState.alphaScoreAccumulator >= SCORE_INTERVAL_SECONDS) {
-                            const scoreUnits = Math.floor(this.gameState.alphaScoreAccumulator / SCORE_INTERVAL_SECONDS);
-                            this.gameState.scoreAlpha += scoreUnits;
-                            this.gameState.alphaScoreAccumulator -= scoreUnits * SCORE_INTERVAL_SECONDS;
-                            this.networkManager.updateRoomState({ scoreAlpha: this.gameState.scoreAlpha });
-                            // UIManager update will happen when this client receives the roomState update via subscription
-                        }
-                    } else if (teamToScore === 'beta') {
-                        this.gameState.betaScoreAccumulator += pointsPerSecond * dtSeconds;
-                        if (this.gameState.betaScoreAccumulator >= SCORE_INTERVAL_SECONDS) {
-                            const scoreUnits = Math.floor(this.gameState.betaScoreAccumulator / SCORE_INTERVAL_SECONDS);
-                            this.gameState.scoreBeta += scoreUnits;
-                            this.gameState.betaScoreAccumulator -= scoreUnits * SCORE_INTERVAL_SECONDS;
-                            this.networkManager.updateRoomState({ scoreBeta: this.gameState.scoreBeta });
-                        }
-                    }
-                     // Check for win condition after score update by the responsible client
-                    const winner = this.gameState.checkWinCondition();
-                    if (winner) {
-                        this.endGame(winner);
-                        // Optionally send a specific "game_over" message if not handled by score limits alone
-                        // this.networkManager.send({ type: 'game_over', winningTeam: winner });
-                    }
-                }
+            if (carrierPresence && !carrierPresence.isDead) {
+                this._calculateScorePoints(deltaTime, fragmentState, carrierPresence); // deltaTime in seconds
+                this._handleFragmentPingLogic(deltaTimeMs, fragmentState, carrierPresence);
             }
         }
 
-        // Fragment Ping Logic (still inside if(isScoringClient) block)
-        if (fragmentState && fragmentState.isCollected && fragmentState.carrierId) {
-            const deltaTimeMs = deltaTime * 1000; // Convert deltaTime (seconds) to milliseconds
-
-            // Ping Accumulator
-            fragmentState.pingAccumulator = (fragmentState.pingAccumulator || 0) + deltaTimeMs;
-            if (fragmentState.pingAccumulator >= fragmentState.PING_INTERVAL) {
-                fragmentState.pingAccumulator = 0;
-                const carrierPresence = this.networkManager.room.presence[fragmentState.carrierId];
-                if (carrierPresence && carrierPresence.position && !carrierPresence.isDead) {
-                    const positionToSend = Array.isArray(carrierPresence.position)
-                        ? carrierPresence.position
-                        : [carrierPresence.position.x, carrierPresence.position.y, carrierPresence.position.z];
-                    this.networkManager.sendFragmentPingAlert(fragmentState.carrierId, positionToSend);
-                }
-            }
-
-            // Overheat Mode Logic
-            fragmentState.continuousHoldTime = (fragmentState.continuousHoldTime || 0) + deltaTimeMs;
-            // Update the fragment state in FragmentManager to persist continuousHoldTime
-            // This ensures that even if this client stops being the authoritative one, the next one has the correct continuousHoldTime.
-            // We only need to send the specific field that changed if updateFragmentState supports partial updates.
-            // Otherwise, send the whole state (which might be safer if structure of fragmentState is complex).
-            // For now, let's assume a targeted update or that fragmentState is a reference that gets updated.
-            // A more robust way: this.fragmentManager.incrementContinuousHoldTime(fragmentState.id, deltaTimeMs);
-            // For this step, direct update and then network sync via updateFragmentState.
-            this.fragmentManager.updateFragmentState(fragmentState.id, { continuousHoldTime: fragmentState.continuousHoldTime });
-
-
-            if (fragmentState.continuousHoldTime >= fragmentState.OVERHEAT_THRESHOLD && !this.gameState.isOverheatModeActive) {
-                this.gameState.isOverheatModeActive = true;
-                this.networkManager.updateRoomState({ isOverheatModeActive: true });
-                if(this.effectsManager) this.effectsManager.startOverheatVisualGlitches();
-                // Initialize timers for the first effects
-                this.gameState.nextOverheatExplosionTime = this.gameState.gameTime * 1000 + (Math.random() * 5000 + 2000); // gameTime is in sec
-                this.gameState.nextHallucinationTime = this.gameState.gameTime * 1000 + (Math.random() * 10000 + 5000);
-                console.log("OVERHEAT MODE ACTIVATED");
-                if (this.streamerDataManager) this.streamerDataManager.addStreamerEvent("Overheat Mode Activated!");
-                if (this.matchStatsManager) this.matchStatsManager.addTimelineEvent("Overheat Mode Activated!", "game-event");
-            }
-        } else { // Fragment is not collected or no carrier
-            if (this.gameState.isOverheatModeActive) {
-                this.gameState.isOverheatModeActive = false;
-                this.networkManager.updateRoomState({ isOverheatModeActive: false });
-                 if(this.effectsManager) this.effectsManager.stopOverheatVisualGlitches();
-                console.log("OVERHEAT MODE DEACTIVATED");
-            }
-        }
-
-        // Overheat Effects Triggering (still inside if(isScoringClient) block)
-        if (this.gameState.isOverheatModeActive) {
-            const currentTimeMs = this.gameState.gameTime * 1000; // gameTime is in seconds
-
-            // Random Explosions
-            if (currentTimeMs >= this.gameState.nextOverheatExplosionTime) {
-                const randomX = (Math.random() - 0.5) * 100; // Example map bounds
-                const randomZ = (Math.random() - 0.5) * 100;
-                const randomPosition = [randomX, 2, randomZ]; // Assuming y=2 is groundish
-                this.networkManager.sendOverheatEffect({ effectType: 'explosion', position: randomPosition });
-                this.gameState.nextOverheatExplosionTime = currentTimeMs + (Math.random() * 8000 + 3000); // Next one in 3-11s
-            }
-
-            // Hallucinated Enemies
-            if (currentTimeMs >= this.gameState.nextHallucinationTime) {
-                const randomX = (Math.random() - 0.5) * 80;
-                const randomZ = (Math.random() - 0.5) * 80;
-                const randomPosition = [randomX, 1, randomZ]; // Hallucinations can be at player height
-                const enemyTypes = ['ghost_jellyfish', 'shadow_figure', 'creepy_krab']; // Example types
-                const randomEnemyType = enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
-                this.networkManager.sendOverheatEffect({ effectType: 'hallucination', position: randomPosition, enemyType: randomEnemyType });
-                this.gameState.nextHallucinationTime = currentTimeMs + (Math.random() * 15000 + 8000); // Next one in 8-23s
-            }
-        }
+        // Overheat mode logic needs to run regardless of carrier, to handle deactivation if fragment is dropped.
+        this._handleOverheatModeLogic(deltaTimeMs, fragmentState);
     }
 
     updateGlobalCorruption(amount) {
@@ -1613,6 +1625,126 @@ export class GameCore {
         const lowestId = connectedPeers.sort()[0];
         return this.networkManager.getPlayerId() === lowestId;
     }
+
+    _calculateScorePoints(deltaTime, fragmentState, carrierPresence) {
+        const carrierPosition = carrierPresence.position;
+        const carrierTeam = carrierPresence.team;
+
+        const isCarrierInAlphaBase = distanceSquared(carrierPosition, TEAM_ALPHA_BASE_CENTER) < BASE_RADIUS_SQUARED;
+        const isCarrierInBetaBase = distanceSquared(carrierPosition, TEAM_BETA_BASE_CENTER) < BASE_RADIUS_SQUARED;
+
+        let pointsPerSecond = 0;
+        let teamToScore = null;
+
+        if (carrierTeam === TEAM_IDS.ALPHA) {
+            if (isCarrierInAlphaBase) { pointsPerSecond = 3; teamToScore = TEAM_IDS.ALPHA; }
+            else if (isCarrierInBetaBase) { pointsPerSecond = 1; teamToScore = TEAM_IDS.ALPHA; }
+        } else if (carrierTeam === TEAM_IDS.BETA) {
+            if (isCarrierInBetaBase) { pointsPerSecond = 3; teamToScore = TEAM_IDS.BETA; }
+            else if (isCarrierInAlphaBase) { pointsPerSecond = 1; teamToScore = TEAM_IDS.BETA; }
+        }
+
+        if (pointsPerSecond > 0 && teamToScore) {
+            const dtSeconds = deltaTime;
+
+            if (teamToScore === TEAM_IDS.ALPHA) {
+                this.gameState.alphaScoreAccumulator += pointsPerSecond * dtSeconds;
+                if (this.gameState.alphaScoreAccumulator >= SCORE_INTERVAL_SECONDS) {
+                    const scoreUnits = Math.floor(this.gameState.alphaScoreAccumulator / SCORE_INTERVAL_SECONDS);
+                    this.gameState.scoreAlpha += scoreUnits;
+                    this.gameState.alphaScoreAccumulator -= scoreUnits * SCORE_INTERVAL_SECONDS;
+                    this.networkManager.updateRoomState({ scoreAlpha: this.gameState.scoreAlpha });
+                }
+            } else if (teamToScore === TEAM_IDS.BETA) {
+                this.gameState.betaScoreAccumulator += pointsPerSecond * dtSeconds;
+                if (this.gameState.betaScoreAccumulator >= SCORE_INTERVAL_SECONDS) {
+                    const scoreUnits = Math.floor(this.gameState.betaScoreAccumulator / SCORE_INTERVAL_SECONDS);
+                    this.gameState.scoreBeta += scoreUnits;
+                    this.gameState.betaScoreAccumulator -= scoreUnits * SCORE_INTERVAL_SECONDS;
+                    this.networkManager.updateRoomState({ scoreBeta: this.gameState.scoreBeta });
+                }
+            }
+            const winner = this.gameState.checkWinCondition();
+            if (winner) {
+                this.endGame(winner);
+                // Optionally send a specific "game_over" message
+                // this.networkManager.send({ type: MESSAGE_TYPES.GAME_OVER, winningTeam: winner });
+            }
+        }
+    }
+
+    _handleFragmentPingLogic(deltaTimeMs, fragmentState, carrierPresence) {
+        if (!fragmentState || !fragmentState.isCollected || !fragmentState.carrierId || !carrierPresence || carrierPresence.isDead) {
+            return;
+        }
+
+        fragmentState.pingAccumulator = (fragmentState.pingAccumulator || 0) + deltaTimeMs;
+        if (fragmentState.pingAccumulator >= fragmentState.PING_INTERVAL) {
+            fragmentState.pingAccumulator = 0; // Reset accumulator
+            const positionToSend = Array.isArray(carrierPresence.position)
+                ? carrierPresence.position
+                : [carrierPresence.position.x, carrierPresence.position.y, carrierPresence.position.z];
+            this.networkManager.sendFragmentPingAlert(fragmentState.carrierId, positionToSend);
+        }
+    }
+
+    _handleOverheatModeLogic(deltaTimeMs, fragmentState) {
+        if (fragmentState && fragmentState.isCollected && fragmentState.carrierId) {
+            fragmentState.continuousHoldTime = (fragmentState.continuousHoldTime || 0) + deltaTimeMs;
+            // Ensure fragmentManager and its method exist before calling
+            if (this.fragmentManager && typeof this.fragmentManager.updateFragmentState === 'function') {
+                 this.fragmentManager.updateFragmentState(fragmentState.id, { continuousHoldTime: fragmentState.continuousHoldTime });
+            } else {
+                console.warn("FragmentManager or updateFragmentState method not available for persisting continuousHoldTime.");
+            }
+
+
+            if (fragmentState.continuousHoldTime >= fragmentState.OVERHEAT_THRESHOLD && !this.gameState.isOverheatModeActive) {
+                this.gameState.isOverheatModeActive = true;
+                this.networkManager.updateRoomState({ isOverheatModeActive: true });
+                if(this.effectsManager) this.effectsManager.startOverheatVisualGlitches();
+                this.gameState.nextOverheatExplosionTime = this.gameState.gameTime * 1000 + (Math.random() * 5000 + 2000);
+                this.gameState.nextHallucinationTime = this.gameState.gameTime * 1000 + (Math.random() * 10000 + 5000);
+                console.log("OVERHEAT MODE ACTIVATED");
+                if (this.streamerDataManager) this.streamerDataManager.addStreamerEvent("Overheat Mode Activated!");
+                if (this.matchStatsManager) this.matchStatsManager.addTimelineEvent("Overheat Mode Activated!", "game-event");
+            }
+        } else {
+            if (this.gameState.isOverheatModeActive) {
+                this.gameState.isOverheatModeActive = false;
+                this.networkManager.updateRoomState({ isOverheatModeActive: false });
+                if(this.effectsManager) this.effectsManager.stopOverheatVisualGlitches();
+                console.log("OVERHEAT MODE DEACTIVATED");
+                if (fragmentState && !fragmentState.isCollected && this.fragmentManager && typeof this.fragmentManager.updateFragmentState === 'function') {
+                     fragmentState.continuousHoldTime = 0;
+                     this.fragmentManager.updateFragmentState(fragmentState.id, { continuousHoldTime: 0 });
+                }
+            }
+        }
+
+        if (this.gameState.isOverheatModeActive) {
+            const currentTimeMs = this.gameState.gameTime * 1000;
+
+            if (currentTimeMs >= this.gameState.nextOverheatExplosionTime) {
+                const randomX = (Math.random() - 0.5) * 100;
+                const randomZ = (Math.random() - 0.5) * 100;
+                const randomPosition = [randomX, 2, randomZ];
+                this.networkManager.sendOverheatEffect({ effectType: 'explosion', position: randomPosition });
+                this.gameState.nextOverheatExplosionTime = currentTimeMs + (Math.random() * 8000 + 3000);
+            }
+
+            if (currentTimeMs >= this.gameState.nextHallucinationTime) {
+                const randomX = (Math.random() - 0.5) * 80;
+                const randomZ = (Math.random() - 0.5) * 80;
+                const randomPosition = [randomX, 1, randomZ];
+                const enemyTypes = ['ghost_jellyfish', 'shadow_figure', 'creepy_krab'];
+                const randomEnemyType = enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
+                this.networkManager.sendOverheatEffect({ effectType: 'hallucination', position: randomPosition, enemyType: randomEnemyType });
+                this.gameState.nextHallucinationTime = currentTimeMs + (Math.random() * 15000 + 8000);
+            }
+        }
+    }
+
 
     getPlayerPosition(playerId) {
         if (!playerId) return null;

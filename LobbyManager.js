@@ -11,17 +11,31 @@ export class LobbyManager {
         this.chaosInfluencer = null; // ID of the Chaos Influencer
     }
 
+import { MESSAGE_TYPES, PLAYER_CLASSES, TEAM_IDS } from './Constants.js';
+
+export class LobbyManager {
+    constructor(gameCore) {
+        this.gameCore = gameCore;
+        this.uiManager = gameCore.uiManager;
+        this.networkManager = gameCore.networkManager;
+
+        this.lobbyPlayers = {}; // Stores { playerId: { username, avatar, teamColor, playerClass, isReady, id } }
+        this.localPlayerId = null;
+        this.localPlayerVotedForChaos = null; // Stores ID of player voted for, or null
+        this.chaosVotes = {}; // Stores { playerId: voteCount }
+        this.chaosInfluencer = null; // ID of the Chaos Influencer
+    }
+
     initialize() {
         // Subscribe to network events for lobby updates
         if (this.networkManager) {
-            this.localPlayerId = this.networkManager.getPlayerId(); // Assuming NM has this method
+            this.localPlayerId = this.networkManager.getPlayerId();
 
-            this.networkManager.subscribe('lobby_player_update', this.handleLobbyPlayerUpdate.bind(this));
-            this.networkManager.subscribe('lobby_chat_message', this.handleLobbyChatMessage.bind(this));
-            this.networkManager.subscribe('lobby_full_sync_request', this.handleFullLobbySyncRequest.bind(this));
-            this.networkManager.subscribe('chaos_vote_update', this.handleChaosVoteUpdateMsg.bind(this));
-            this.networkManager.subscribe('chaos_influencer_determined', this.handleChaosInfluencerDeterminedMsg.bind(this));
-
+            this.networkManager.subscribe(MESSAGE_TYPES.LOBBY_PLAYER_UPDATE, this.handleLobbyPlayerUpdate.bind(this));
+            this.networkManager.subscribe(MESSAGE_TYPES.LOBBY_CHAT_MESSAGE, this.handleLobbyChatMessage.bind(this));
+            this.networkManager.subscribe(MESSAGE_TYPES.LOBBY_FULL_SYNC_REQUEST, this.handleFullLobbySyncRequest.bind(this));
+            this.networkManager.subscribe(MESSAGE_TYPES.CHAOS_VOTE_UPDATE, this.handleChaosVoteUpdateMsg.bind(this));
+            this.networkManager.subscribe(MESSAGE_TYPES.CHAOS_INFLUENCER_DETERMINED, this.handleChaosInfluencerDeterminedMsg.bind(this));
 
             // Initialize local player's default state
             this.initializeLocalPlayerData();
@@ -82,9 +96,9 @@ export class LobbyManager {
             this.lobbyPlayers[this.localPlayerId] = {
                 id: this.localPlayerId,
                 username: username,
-                avatar: 'default',
-                teamColor: 'blue',
-                playerClass: 'assault',
+                avatar: 'default', // Default avatar
+                teamColor: TEAM_IDS.ALPHA, // Default team (maps to 'blue' in UIManager for now)
+                playerClass: PLAYER_CLASSES.ASSAULT, // Default class
                 isReady: false
             };
         }
@@ -98,17 +112,25 @@ export class LobbyManager {
         this.updatePlayerLobbyStatus();
     }
 
-    handleTeamColorSelection(color) {
+    handleTeamColorSelection(color) { // color is 'blue' or 'red' from UI for now
         const localPlayer = this.initializeLocalPlayerData();
         if (!localPlayer) return;
+        // Map UI color string to TEAM_ID if necessary, or ensure LobbyManager/UIManager use consistent values.
+        // For now, assuming UIManager provides a value that Player.js/GameCore.js can map or use.
+        // Player.js setClass will use TEAM_IDS.ALPHA/BETA based on this string.
         localPlayer.teamColor = color;
         this.updatePlayerLobbyStatus();
     }
 
-    handleClassSelection(playerClass) {
+    handleClassSelection(playerClass) { // playerClass should be one of PLAYER_CLASSES
         const localPlayer = this.initializeLocalPlayerData();
         if (!localPlayer) return;
-        localPlayer.playerClass = playerClass;
+        if (Object.values(PLAYER_CLASSES).includes(playerClass)) {
+            localPlayer.playerClass = playerClass;
+        } else {
+            console.warn(`Invalid playerClass selected: ${playerClass}. Defaulting to ASSAULT.`);
+            localPlayer.playerClass = PLAYER_CLASSES.ASSAULT;
+        }
         this.updatePlayerLobbyStatus();
     }
 

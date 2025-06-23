@@ -1,3 +1,5 @@
+import { TEAM_IDS, GAME_PHASES } from './Constants.js'; // Added GAME_PHASES for future use
+
 export class GameState {
     constructor() {
         this.isGameStarted = false;
@@ -61,18 +63,18 @@ export class GameState {
     // addScore is kept as direct score addition is still used for some events,
     // but time-based scoring will use accumulators.
     addScore(team, points) {
-        if (team === 'alpha') {
+        if (team === TEAM_IDS.ALPHA) {
             this.scoreAlpha += points;
-        } else {
+        } else if (team === TEAM_IDS.BETA) { // Added else if for clarity
             this.scoreBeta += points;
         }
     }
     
     checkWinCondition() {
         if (this.scoreAlpha >= this.winScore) {
-            return 'alpha';
+            return TEAM_IDS.ALPHA;
         } else if (this.scoreBeta >= this.winScore) {
-            return 'beta';
+            return TEAM_IDS.BETA;
         }
         return null;
     }

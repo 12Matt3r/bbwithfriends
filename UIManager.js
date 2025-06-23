@@ -152,22 +152,30 @@ export class UIManager {
     }
 
     setupConfessionalEventListeners() {
-        if (this.submitConfessionalButton) {
-            this.submitConfessionalButton.addEventListener('click', () => {
-                const quoteText = this.confessionalTextInput.value.trim();
-                if (quoteText && this.currentBoothIdForConfessional) {
-                    if (this.gameCore && typeof this.gameCore.recordConfessional === 'function') {
-                        this.gameCore.recordConfessional(quoteText, this.currentBoothIdForConfessional);
-                    }
+        const handleSubmit = (event) => {
+            event.preventDefault(); // Prevent potential double event / default actions
+            const quoteText = this.confessionalTextInput.value.trim();
+            if (quoteText && this.currentBoothIdForConfessional) {
+                if (this.gameCore && typeof this.gameCore.recordConfessional === 'function') {
+                    this.gameCore.recordConfessional(quoteText, this.currentBoothIdForConfessional);
                 }
-                this.hideConfessionalInput();
-            });
+            }
+            this.hideConfessionalInput();
+        };
+
+        if (this.submitConfessionalButton) {
+            this.submitConfessionalButton.addEventListener('click', handleSubmit);
+            this.submitConfessionalButton.addEventListener('touchend', handleSubmit);
         }
 
+        const handleCancel = (event) => {
+            event.preventDefault();
+            this.hideConfessionalInput();
+        };
+
         if (this.cancelConfessionalButton) {
-            this.cancelConfessionalButton.addEventListener('click', () => {
-                this.hideConfessionalInput();
-            });
+            this.cancelConfessionalButton.addEventListener('click', handleCancel);
+            this.cancelConfessionalButton.addEventListener('touchend', handleCancel);
         }
 
         // Optional: Allow Escape to also cancel the confessional input
@@ -206,6 +214,12 @@ export class UIManager {
             this.isConfessionalInputActive = true;
             this.confessionalTextInput.value = '';
             this.confessionalTextInput.focus();
+            console.log('Attempted to focus confessional input. Active element:', document.activeElement);
+            // Optionally, add a setTimeout for focus on mobile if direct focus fails:
+            // setTimeout(() => {
+            //     this.confessionalTextInput.focus();
+            //     console.log('Attempted to focus confessional input (delayed). Active element:', document.activeElement);
+            // }, 100);
             if (this.gameCore.inputManager) {
                 this.gameCore.inputManager.setFocus(false); // Disable game input
             }
@@ -214,13 +228,14 @@ export class UIManager {
     }
 
     hideConfessionalInput() {
+        console.log('Hiding confessional input.');
         if (this.confessionalInputOverlay) {
             this.confessionalInputOverlay.style.display = 'none';
             this.isConfessionalInputActive = false;
             if (this.gameCore.inputManager) {
                 this.gameCore.inputManager.setFocus(true); // Re-enable game input
             }
-            // Re-acquire pointer lock only if game is active
+            // Re-acquire pointer lock only if game is active and game is started
             if (this.gameCore.enablePointerLock && this.gameCore.gameState && this.gameCore.gameState.isGameStarted) {
                 this.gameCore.enablePointerLock(true);
             }
@@ -326,6 +341,346 @@ export class UIManager {
         return div.innerHTML;
     }
 
+import { PLAYER_CLASSES, WEAPON_TYPES, TEAM_IDS, SOUND_KEYS } from './Constants.js'; // Assuming TEAM_IDS might be useful for team color mapping
+
+export class UIManager {
+    constructor(gameCore) {
+        this.gameCore = gameCore;
+        // DOM elements for lobby
+        this.lobbyScreen = document.getElementById('lobby-screen');
+        this.lobbyPlayerList = document.getElementById('lobby-player-list');
+        this.avatarSelect = document.getElementById('avatar-select');
+        this.teamColorSelect = document.getElementById('team-color-select');
+        this.readyButton = document.getElementById('ready-button');
+        this.chatMessages = document.getElementById('chat-messages');
+        this.chatInputField = document.getElementById('chat-input-field');
+        this.sendChatButton = document.getElementById('send-chat-button');
+        // Chaos Vote elements
+        this.chaosVoteList = document.getElementById('chaos-vote-list');
+        this.chaosInfluencerDisplay = document.getElementById('chaos-influencer-display');
+        this.chaosInfluencerName = document.getElementById('chaos-influencer-name');
+
+        // Corruption and Kill Feed
+        this.corruptionDisplay = document.getElementById('corruption-level'); // This is the element for the text "0%"
+        this.killFeedContainer = document.getElementById('kill-feed-container'); // Corrected ID
+
+        // Console Elements
+        this.consoleContainer = document.getElementById('console'); // Using existing ID
+        this.consoleLog = document.getElementById('console-output');   // Using existing ID
+        this.consoleInput = document.getElementById('console-input');   // Using existing ID
+        this.isConsoleOpen = false;
+
+        // Map Reveal Elements & State
+        this.mapRevealOverlay = document.getElementById('map-reveal-overlay');
+        this.mapRevealPlayerIconsContainer = document.getElementById('map-reveal-player-icons');
+        this.mapRevealTimerDisplay = document.getElementById('map-reveal-timer');
+        this.mapRevealActive = false;
+        this.mapRevealInterval = null;
+        this.mapRevealEndTime = 0;
+        // Define map bounds (minX, maxX, minZ, maxZ) for your game world.
+        // EXAMPLE VALUES - ADJUST TO YOUR ACTUAL MAP DIMENSIONS!
+        this.mapWorldBounds = { minX: -60, maxX: 60, minZ: -60, maxZ: 60 };
+
+        // Confessional Booth Elements & State
+        this.confessionalPrompt = document.getElementById('confessional-prompt');
+        this.confessionalInputOverlay = document.getElementById('confessional-input-overlay');
+        this.confessionalTextInput = document.getElementById('confessional-text-input');
+        this.submitConfessionalButton = document.getElementById('submit-confessional-button');
+        this.cancelConfessionalButton = document.getElementById('cancel-confessional-button');
+        this.currentBoothIdForConfessional = null; // To store which booth triggered the input
+        this.isConfessionalInputActive = false; // To track if the input overlay is shown
+
+        // Match Summary Screen Elements
+        this.matchSummaryScreen = document.getElementById('match-summary-screen');
+        this.summaryLongestHolder = document.getElementById('summary-longest-holder');
+        this.summaryMostCommands = document.getElementById('summary-most-commands');
+        this.summaryConfessionalList = document.getElementById('summary-confessional-list');
+        this.summaryTimelineLog = document.getElementById('summary-timeline-log');
+        this.copyTimelineButton = document.getElementById('copy-timeline-button');
+        this.summaryScreenshotContainer = document.getElementById('summary-screenshot-container');
+        this.summaryScreenshotImg = document.getElementById('summary-screenshot-img');
+        this.downloadScreenshotLink = document.getElementById('download-screenshot-link');
+        this.closeSummaryButton = document.getElementById('close-summary-button');
+
+
+        this.setupEventListeners();
+        this.setupWeaponSelection();
+        this.setupConsoleInputListener();
+        this.setupConfessionalEventListeners();
+        this.setupMatchSummaryEventListeners();
+    }
+
+    setupEventListeners() {
+        // Main Menu
+        document.getElementById('join-game').addEventListener('click', () => {
+            // Transition to lobby is handled by GameCore
+            this.gameCore.transitionToLobby();
+        });
+
+        document.getElementById('controls-btn').addEventListener('click', () => {
+            this.showControls();
+        });
+
+        document.getElementById('play-again').addEventListener('click', () => {
+            this.gameCore.restartGame();
+        });
+
+        // Lobby Screen listeners
+        if (this.avatarSelect) {
+            this.avatarSelect.addEventListener('change', (e) => {
+                if (this.gameCore.lobbyManager) {
+                    this.gameCore.lobbyManager.handleAvatarSelection(e.target.value);
+                }
+            });
+        }
+
+        if (this.teamColorSelect) {
+            this.teamColorSelect.addEventListener('change', (e) => {
+                if (this.gameCore.lobbyManager) {
+                    this.gameCore.lobbyManager.handleTeamColorSelection(e.target.value);
+                }
+            });
+        }
+
+        if (this.readyButton) {
+            this.readyButton.addEventListener('click', () => {
+                if (this.gameCore.lobbyManager) {
+                    this.gameCore.lobbyManager.handleReadyButtonClick();
+                    // Toggle visual state of the ready button
+                    this.readyButton.classList.toggle('ready');
+                    this.readyButton.textContent = this.readyButton.classList.contains('ready') ? 'Unready' : 'Ready';
+                }
+            });
+        }
+
+        if (this.sendChatButton) {
+            this.sendChatButton.addEventListener('click', () => {
+                this.sendChatMessage();
+            });
+        }
+
+        if (this.chatInputField) {
+            this.chatInputField.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    this.sendChatMessage();
+                }
+            });
+        }
+
+        // Chaos Vote listener
+        if (this.chaosVoteList) {
+            this.chaosVoteList.addEventListener('click', (e) => {
+                if (e.target && e.target.classList.contains('vote-button')) {
+                    const votedPlayerId = e.target.dataset.playerId;
+                    if (votedPlayerId && this.gameCore.lobbyManager) {
+                        this.gameCore.lobbyManager.castChaosVote(votedPlayerId);
+                        // Optionally disable the button or all vote buttons for this user here
+                        // e.g., e.target.disabled = true;
+                        // or this.disableAllVoteButtons();
+                    }
+                }
+            });
+        }
+
+        // Class Selection listeners
+        const classButtons = document.querySelectorAll('.class-select-button');
+        classButtons.forEach(button => {
+            button.addEventListener('click', (event) => {
+                if (this.gameCore.lobbyManager) {
+                    const selectedClass = event.target.dataset.class; // This should be a PLAYER_CLASSES value
+                    classButtons.forEach(btn => btn.classList.remove('selected'));
+                    event.target.classList.add('selected');
+                    this.gameCore.lobbyManager.handleClassSelection(selectedClass);
+                }
+            });
+        });
+    }
+
+    setupConfessionalEventListeners() {
+        const handleSubmit = (event) => {
+            event.preventDefault(); // Prevent potential double event / default actions
+            const quoteText = this.confessionalTextInput.value.trim();
+            if (quoteText && this.currentBoothIdForConfessional) {
+                if (this.gameCore && typeof this.gameCore.recordConfessional === 'function') {
+                    this.gameCore.recordConfessional(quoteText, this.currentBoothIdForConfessional);
+                }
+            }
+            this.hideConfessionalInput();
+        };
+
+        if (this.submitConfessionalButton) {
+            this.submitConfessionalButton.addEventListener('click', handleSubmit);
+            this.submitConfessionalButton.addEventListener('touchend', handleSubmit);
+        }
+
+        const handleCancel = (event) => {
+            event.preventDefault();
+            this.hideConfessionalInput();
+        };
+
+        if (this.cancelConfessionalButton) {
+            this.cancelConfessionalButton.addEventListener('click', handleCancel);
+            this.cancelConfessionalButton.addEventListener('touchend', handleCancel);
+        }
+
+        // Optional: Allow Escape to also cancel the confessional input
+        if (this.confessionalTextInput) {
+            this.confessionalTextInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && this.isConfessionalInputActive) { // Check if input is active
+                    this.hideConfessionalInput();
+                }
+            });
+        }
+    }
+
+    showConfessionalPrompt(boothId) {
+        if (this.confessionalPrompt) {
+            this.confessionalPrompt.style.display = 'block';
+            this.currentBoothIdForConfessional = boothId; // Store the booth ID
+        }
+    }
+
+    hideConfessionalPrompt() {
+        if (this.confessionalPrompt) {
+            this.confessionalPrompt.style.display = 'none';
+            // Don't nullify currentBoothIdForConfessional here,
+            // InputManager might need it briefly after prompt is hidden and before input is shown.
+        }
+    }
+
+    isConfessionalInputVisible() { // Renamed from isConfessionalInputActive for clarity of function
+        return this.isConfessionalInputActive;
+    }
+
+    showConfessionalInput() {
+        if (this.confessionalInputOverlay && this.confessionalTextInput) {
+            this.hideConfessionalPrompt(); // Hide prompt when input overlay is shown
+            this.confessionalInputOverlay.style.display = 'flex';
+            this.isConfessionalInputActive = true;
+            this.confessionalTextInput.value = '';
+            this.confessionalTextInput.focus();
+            console.log('Attempted to focus confessional input. Active element:', document.activeElement);
+            // Optionally, add a setTimeout for focus on mobile if direct focus fails:
+            // setTimeout(() => {
+            //     this.confessionalTextInput.focus();
+            //     console.log('Attempted to focus confessional input (delayed). Active element:', document.activeElement);
+            // }, 100);
+            if (this.gameCore.inputManager) {
+                this.gameCore.inputManager.setFocus(false); // Disable game input
+            }
+            if (this.gameCore.enablePointerLock) this.gameCore.enablePointerLock(false);
+        }
+    }
+
+    hideConfessionalInput() {
+        console.log('Hiding confessional input.');
+        if (this.confessionalInputOverlay) {
+            this.confessionalInputOverlay.style.display = 'none';
+            this.isConfessionalInputActive = false;
+            if (this.gameCore.inputManager) {
+                this.gameCore.inputManager.setFocus(true); // Re-enable game input
+            }
+            // Re-acquire pointer lock only if game is active and game is started
+            if (this.gameCore.enablePointerLock && this.gameCore.gameState && this.gameCore.gameState.isGameStarted) {
+                this.gameCore.enablePointerLock(true);
+            }
+            // If player is still in a booth zone, Player.js logic will call showConfessionalPrompt again.
+            // No need to explicitly re-show it here, to avoid race conditions.
+            this.currentBoothIdForConfessional = null; // Clear stored booth ID once input is done
+        }
+    }
+
+    setupConsoleInputListener() {
+        if (this.consoleInput) {
+            this.consoleInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && this.isConsoleOpen) {
+                    event.preventDefault();
+                    const commandText = this.consoleInput.value.trim();
+                    if (commandText) {
+                        this.addConsoleLogMessage(commandText, 'user'); // Log user's typed command
+                        if (this.gameCore.consoleManager) {
+                            this.gameCore.consoleManager.processCommand(commandText);
+                        }
+                    }
+                    this.consoleInput.value = ''; // Clear input
+                } else if (event.key === 'Escape' && this.isConsoleOpen) {
+                    event.preventDefault();
+                    this.toggleConsole();
+                }
+            });
+        }
+    }
+
+    toggleConsole() {
+        this.isConsoleOpen = !this.isConsoleOpen;
+        if (this.consoleContainer) {
+            this.consoleContainer.classList.toggle('hidden', !this.isConsoleOpen);
+        }
+
+        if (this.isConsoleOpen) {
+            if (this.consoleInput) this.consoleInput.focus();
+            if (this.gameCore.inputManager) this.gameCore.inputManager.setFocus(false); // Game loses focus
+            if (this.gameCore.enablePointerLock) this.gameCore.enablePointerLock(false); // Release pointer lock
+        } else {
+            if (this.consoleInput) this.consoleInput.blur();
+            if (this.gameCore.inputManager) this.gameCore.inputManager.setFocus(true);  // Game gains focus
+            // Re-acquire pointer lock only if game is active and was previously locked
+            if (this.gameCore.enablePointerLock && this.gameCore.gameState && this.gameCore.gameState.isGameStarted) {
+                 this.gameCore.enablePointerLock(true);
+            }
+        }
+    }
+
+    isConsoleVisible() {
+        return this.isConsoleOpen;
+    }
+
+    addConsoleLogMessage(message, type = 'info') { // type can be 'info', 'error', 'response', 'user', 'audience', 'special_effect'
+        if (!this.consoleLog) return;
+        const messageDiv = document.createElement('div');
+        messageDiv.className = type;
+
+        const prompt = (type !== 'user') ? '> ' : '';
+        messageDiv.textContent = `${prompt}${message}`;
+
+        this.consoleLog.appendChild(messageDiv);
+        this.consoleLog.scrollTop = this.consoleLog.scrollHeight;
+    }
+
+    disableAllVoteButtons() {
+        if (!this.chaosVoteList) return;
+        const buttons = this.chaosVoteList.querySelectorAll('.vote-button');
+        buttons.forEach(button => button.disabled = true);
+    }
+
+    sendChatMessage() {
+        const message = this.chatInputField.value.trim();
+        if (message && this.gameCore.networkManager) {
+            this.gameCore.networkManager.sendLobbyChatMessage(message);
+            this.chatInputField.value = '';
+        }
+    }
+
+    addChatMessage(playerName, message, isSystemMessage = false) {
+        if (!this.chatMessages) return;
+        const messageElement = document.createElement('div');
+        messageElement.classList.add('chat-message');
+        if (isSystemMessage) {
+            messageElement.classList.add('system-message');
+            messageElement.innerHTML = `<em>${message}</em>`;
+        } else {
+            messageElement.innerHTML = `<span class="player-name">${playerName}:</span> ${this.escapeHTML(message)}`;
+        }
+        this.chatMessages.appendChild(messageElement);
+        this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+    }
+
+    escapeHTML(str) {
+        const div = document.createElement('div');
+        div.appendChild(document.createTextNode(str));
+        return div.innerHTML;
+    }
+
     setupWeaponSelection() {
         // Add weapon selection UI to main menu
         const weaponSelector = document.createElement('div');
@@ -333,9 +688,9 @@ export class UIManager {
         weaponSelector.innerHTML = `
             <div class="weapon-title">SELECT LOADOUT</div>
             <div class="weapon-options">
-                <button class="weapon-btn active" data-weapon="assault">ASSAULT</button>
-                <button class="weapon-btn" data-weapon="scout">SCOUT</button>
-                <button class="weapon-btn" data-weapon="heavy">HEAVY</button>
+                <button class="weapon-btn active" data-weapon="${PLAYER_CLASSES.ASSAULT}">ASSAULT</button>
+                <button class="weapon-btn" data-weapon="${PLAYER_CLASSES.SCOUT}">SCOUT</button>
+                <button class="weapon-btn" data-weapon="${PLAYER_CLASSES.HEAVY}">HEAVY</button>
             </div>
         `;
         
@@ -346,7 +701,25 @@ export class UIManager {
             btn.addEventListener('click', (e) => {
                 document.querySelectorAll('.weapon-btn').forEach(b => b.classList.remove('active'));
                 e.target.classList.add('active');
-                this.gameCore.player.setWeaponType(e.target.dataset.weapon);
+                // Player.setWeaponType expects a WEAPON_TYPES value,
+                // but Player.setClass (called from lobby) takes PLAYER_CLASSES.
+                // If this menu directly sets weapon type without class change, ensure consistency.
+                // For now, assuming data-weapon aligns with what Player.js expects for direct type setting,
+                // or that Player.js setWeaponType can handle PLAYER_CLASSES strings.
+                // The Player.js's setClass method already sets weaponType based on PLAYER_CLASSES.
+                // This particular setWeaponType call might be for a scenario outside of class selection (e.g. in-game weapon pickup)
+                // or if the main menu setting is meant to be independent of full class stats.
+                // Given current structure, this call to setWeaponType with PLAYER_CLASSES string
+                // will be handled by Player.js's setClass if that's what setWeaponType internally calls,
+                // or by a direct weaponType mapping if Player.setWeaponType is different.
+                // Let's assume player.setWeaponType will correctly map from PLAYER_CLASSES if needed,
+                // or that WEAPON_TYPES and PLAYER_CLASSES values are identical for this context.
+                // Player.js was updated so setWeaponType expects WEAPON_TYPES.
+                // Player.getWeaponForClass(playerClass) returns a WEAPON_TYPES.
+                // So, if `e.target.dataset.weapon` is a PLAYER_CLASSES string, we need to convert it.
+                const playerClass = e.target.dataset.weapon;
+                const weaponType = this.gameCore.player.getWeaponForClass(playerClass); // Get corresponding WEAPON_TYPE
+                this.gameCore.player.setWeaponType(weaponType);
             });
         });
     }
@@ -921,15 +1294,14 @@ WARNING: Using Sandy's computer increases corruption levels in Bikini Bottom.`);
         }
     }
     
-    updateWeaponDisplay(weaponType) {
-        /* @tweakable universal H20pew weapon display names for all classes */
-        const weaponNames = {
-            assault: 'H20PEW ASSAULT',
-            scout: 'H20PEW SCOUT', 
-            heavy: 'H20PEW HEAVY'
+    updateWeaponDisplay(weaponType) { // weaponType is expected to be a WEAPON_TYPES value
+        const weaponDisplayNames = {
+            [WEAPON_TYPES.ASSAULT]: 'H20PEW ASSAULT',
+            [WEAPON_TYPES.SCOUT]: 'H20PEW SCOUT',
+            [WEAPON_TYPES.HEAVY]: 'H20PEW HEAVY',
         };
         
-        document.getElementById('weapon-name').textContent = weaponNames[weaponType] || 'H20PEW BLASTER';
+        document.getElementById('weapon-name').textContent = weaponDisplayNames[weaponType] || 'H20PEW BLASTER';
     }
     
     lastAlphaScore = 0;
@@ -975,7 +1347,7 @@ WARNING: Using Sandy's computer increases corruption levels in Bikini Bottom.`);
         this.updateMapRevealPlayerIcons(); // Initial update
 
         if (this.gameCore.audioManager) {
-            this.gameCore.audioManager.playSound('reveal_map_start_sound'); // Ensure this sound key exists
+            this.gameCore.audioManager.playSound(SOUND_KEYS.REVEAL_MAP_START);
         }
     }
 
@@ -1050,7 +1422,7 @@ WARNING: Using Sandy's computer increases corruption levels in Bikini Bottom.`);
             this.mapRevealPlayerIconsContainer.innerHTML = '';
         }
         if (this.gameCore.audioManager) {
-            this.gameCore.audioManager.playSound('reveal_map_end_sound'); // Ensure this sound key exists
+            this.gameCore.audioManager.playSound(SOUND_KEYS.REVEAL_MAP_END);
         }
     }
 

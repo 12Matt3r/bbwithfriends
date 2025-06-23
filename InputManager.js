@@ -12,7 +12,13 @@ export class InputManager {
             shoot: false, // Added for mousedown/up tracking for console interaction
             reload: false // Added for mousedown/up tracking
         };
-        this.consoleActive = false; // Added consoleActive flag
+        this.consoleActive = false;
+        this.keys = {}; // To track held-down keys for "just pressed" logic
+
+        // "Just pressed" flags
+        this.keyRPressedThisFrame = false;
+        this.keyFPressedThisFrame = false; // For Interact (using F key)
+        this.keyShiftLeftPressedThisFrame = false; // For Crouch toggle
         
         this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
         
@@ -38,26 +44,26 @@ export class InputManager {
         });
         
         document.addEventListener('mousemove', (event) => {
-            if (this.gameCore.gameState.isGameStarted && document.pointerLockElement) {
+            if (this.gameCore.gameState.isGameStarted && document.pointerLockElement && !this.consoleActive) { // Added !this.consoleActive
                 this.handleMouseMove(event);
             }
         });
         
         document.addEventListener('mousedown', (event) => {
-            if (this.consoleActive) return; // Check if console is active
+            if (this.consoleActive || this.gameCore.uiManager.isConfessionalInputVisible()) return;
             if (this.gameCore.gameState.isGameStarted) {
                 if (event.button === 0) { // Left click
-                    this.controls.shoot = true; // Set control state
+                    this.controls.shoot = true;
                     this.gameCore.handleShoot();
                 } else if (event.button === 2) { // Right click
-                    this.controls.reload = true; // Set control state
+                    this.controls.reload = true;
                     this.gameCore.handleReload();
                 }
             }
         });
 
         document.addEventListener('mouseup', (event) => {
-            // No consoleActive check here, as mouseup should always register if mousedown did
+            if (this.consoleActive || this.gameCore.uiManager.isConfessionalInputVisible()) return;
             if (this.gameCore.gameState.isGameStarted) {
                 if (event.button === 0) { // Left click
                     this.controls.shoot = false;
@@ -69,14 +75,14 @@ export class InputManager {
         
         // Prevent right-click context menu
         document.addEventListener('contextmenu', (event) => {
-            if (this.consoleActive) return; // Check if console is active
+            if (this.consoleActive || this.gameCore.uiManager.isConfessionalInputVisible()) return;
             if (this.gameCore.gameState.isGameStarted) {
                 event.preventDefault();
             }
         });
         
         document.addEventListener('click', () => {
-            if (this.consoleActive) return; // Check if console is active
+            if (this.consoleActive || this.gameCore.uiManager.isConfessionalInputVisible()) return;
             if (this.gameCore.gameState.isGameStarted && !document.pointerLockElement) {
                 this.requestPointerLock();
             }
@@ -88,9 +94,12 @@ export class InputManager {
     }
 
     setFocus(isGameFocused) {
-        this.consoleActive = !isGameFocused;
-        if (this.consoleActive) {
-            // Clear movement states when console opens to prevent continuous movement
+        console.log('InputManager focus set to gameFocused:', isGameFocused);
+        this.consoleActive = !isGameFocused; // This flag is used by UIManager.toggleConsole & UIManager.showConfessionalInput
+                                         // to signal InputManager that game controls should be ignored.
+                                         // UIManager calls setFocus(false) when its own inputs (console, confessional) take over.
+        if (!isGameFocused) { // If game is NOT focused (i.e., consoleActive is true, or confessional input is active)
+            // Clear movement states when console or other UI overlay opens to prevent continuous movement
             this.controls.moveForward = false;
             this.controls.moveBackward = false;
             this.controls.moveLeft = false;
@@ -169,23 +178,29 @@ export class InputManager {
             case 'shift':
                 event.preventDefault();
                 if (event.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT) {
-                    // Right Shift = Sprint
                     this.controls.sprint = true;
-                } else {
-                    // Left Shift = Crouch
+                } else if (event.location === KeyboardEvent.DOM_KEY_LOCATION_LEFT) {
+                    if (!this.keys['ShiftLeft']) this.keyShiftLeftPressedThisFrame = true;
+                    this.keys['ShiftLeft'] = true;
                     this.controls.crouch = true;
                 }
                 break;
             case 'r':
                 event.preventDefault();
-                this.gameCore.handleReload();
+                if (!this.keys['KeyR']) this.keyRPressedThisFrame = true;
+                this.keys['KeyR'] = true;
+                // Direct call to gameCore.handleReload() removed.
                 break;
-            case 'f':
+            case 'f': // Changed 'e' to 'f' for general interaction as per typical game controls
                 event.preventDefault();
-                this.gameCore.handleInteraction(); // This is generic interaction (F key)
+                if (!this.keys['KeyF']) this.keyFPressedThisFrame = true; // Use keyFPressedThisFrame
+                this.keys['KeyF'] = true;
+                // Direct call to gameCore.handleInteraction() removed.
                 break;
-            case 'e': // New case for 'E' key for Confessional
+            case 'e': // This 'e' might be a separate action or confessional specific
                 event.preventDefault();
+                // If 'e' is still for confessional UI activation, that direct call can remain
+                // as it's a UI interaction, not a player game action state.
                 if (!this.consoleActive &&
                     this.gameCore.player && this.gameCore.player.currentBoothId &&
                     this.gameCore.uiManager && !this.gameCore.uiManager.isConfessionalInputVisible())
@@ -241,16 +256,34 @@ export class InputManager {
                 break;
             case 'shift':
                 if (event.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT) {
-                    // Right Shift released = stop sprint (only if not double-tap sprinting)
                     if (!this.isDoubleTapSprinting) {
                         this.controls.sprint = false;
                     }
-                } else {
-                    // Left Shift released = stop crouch
+                } else if (event.location === KeyboardEvent.DOM_KEY_LOCATION_LEFT) {
+                    this.keys['ShiftLeft'] = false;
                     this.controls.crouch = false;
                 }
                 break;
+            case 'r':
+                this.keys['KeyR'] = false;
+                break;
+            case 'f':
+                this.keys['KeyF'] = false;
+                break;
         }
+    }
+
+    exportAndResetJustPressedActions() {
+        const actions = {
+            interactJustPressed: this.keyFPressedThisFrame, // Changed from keyE... to keyF...
+            reloadJustPressed: this.keyRPressedThisFrame,
+            crouchToggleJustPressed: this.keyShiftLeftPressedThisFrame,
+        };
+        // Reset for next frame
+        this.keyFPressedThisFrame = false;
+        this.keyRPressedThisFrame = false;
+        this.keyShiftLeftPressedThisFrame = false;
+        return actions;
     }
     
     handleMouseMove(event) {

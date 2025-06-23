@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { MATERIAL_TYPES, SOUND_KEYS } from './Constants.js';
 
 export class EffectsManager {
     constructor(scene, gameState, environment) {
@@ -397,7 +398,7 @@ export class EffectsManager {
         // Example: Simple ghostly sphere
         const hallucinationGeometry = new THREE.SphereGeometry(0.8, 16, 12);
         const hallucinationMaterial = new THREE.MeshBasicMaterial({
-            color: enemyType === 'creepy_krab' ? 0xff4500 : 0x880088, // OrangeRed for krab, Purple for others
+            color: enemyType === 'creepy_krab' ? 0xff4500 : 0x880088, // OrangeRed for krab, Purple for others // TODO: Consider constants for enemy types if they are used elsewhere
             transparent: true,
             opacity: 0.3 + Math.random() * 0.2,
             wireframe: true
@@ -448,18 +449,20 @@ export class EffectsManager {
         }, trailDuration);
     }
 
-    createImpactEffect(positionVec3, materialType) { // materialType is currently a string name
+    createImpactEffect(positionVec3, materialType) {
         console.log(`Creating impact effect at ${positionVec3.x}, ${positionVec3.y}, ${positionVec3.z} on material: ${materialType}`);
-        // Re-use or adapt createHitEffect for generic impacts
-        // For now, let's make it slightly different: smaller, quicker, different color
         const particleCount = 3 + Math.floor(Math.random() * 3);
         const particleSpeed = 0.3 + Math.random() * 0.2;
         const particleLifetime = 300 + Math.random() * 200;
 
         for (let i = 0; i < particleCount; i++) {
             const geometry = new THREE.SphereGeometry(0.03 + Math.random() * 0.02);
-            // Sparks for generic/metal, dust for others?
-            const color = (materialType === 'metal' || materialType === 'generic') ? 0xffff00 : 0x888888;
+            let color = 0x888888; // Default dust color
+            if (materialType === MATERIAL_TYPES.METAL || materialType === MATERIAL_TYPES.GENERIC) {
+                color = 0xffff00; // Sparks for metal/generic
+            }
+            // TODO: Add more material type checks if defined in MATERIAL_TYPES
+
             const material = new THREE.MeshBasicMaterial({
                 color: color,
                 transparent: true,
@@ -469,7 +472,7 @@ export class EffectsManager {
             particle.position.copy(positionVec3);
             const velocity = new THREE.Vector3(
                 (Math.random() - 0.5) * particleSpeed,
-                (Math.random() - 0.5) * particleSpeed, // Sparks can go in any direction
+                (Math.random() - 0.5) * particleSpeed,
                 (Math.random() - 0.5) * particleSpeed
             );
             this.scene.add(particle);
@@ -479,7 +482,7 @@ export class EffectsManager {
                 const progress = elapsed / particleLifetime;
                 if (progress >= 1) { this.scene.remove(particle); return; }
                 particle.position.add(velocity.clone().multiplyScalar(0.016));
-                velocity.y -= 0.005; // A little gravity for sparks
+                velocity.y -= 0.005;
                 particle.material.opacity = 1 - progress;
                 requestAnimationFrame(animate);
             };
@@ -488,9 +491,7 @@ export class EffectsManager {
     }
 
     showHitConfirmation() {
-        // Example: A small, quick red flash or crosshair change
-        // Using addScreenFlash for simplicity, but could be a dedicated UI element
-        this.addScreenFlash('rgba(255,0,0,0.2)', 80); // Brief, semi-transparent red flash
+        this.addScreenFlash('rgba(255,0,0,0.2)', 80);
 
         // Alternative: Crosshair color change
         const crosshairDot = document.querySelector('#crosshair .crosshair-dot');
@@ -576,52 +577,46 @@ export class EffectsManager {
     }
 
     setPlayerMutationEffectLevel(level) {
-        if (this.currentMutationLevel === level && this.mutationEffectInterval && level !== 0) return; // Avoid restarting interval if level is same and interval exists
+        if (this.currentMutationLevel === level && this.mutationEffectInterval && level !== 0) return;
 
         this.currentMutationLevel = level;
-        const gameUiElement = document.getElementById('game-ui'); // More specific than document.body
+        const gameUiElement = document.getElementById('game-ui');
 
-        // Clear previous interval if any
         if (this.mutationEffectInterval) {
             clearInterval(this.mutationEffectInterval);
             this.mutationEffectInterval = null;
         }
 
-        // Remove all mutation-related screen effect classes
         if(gameUiElement) {
             gameUiElement.classList.remove('mutation-level-1', 'mutation-level-2');
         } else {
-            document.body.classList.remove('mutation-level-1', 'mutation-level-2'); // Fallback
+            document.body.classList.remove('mutation-level-1', 'mutation-level-2');
         }
-        // Example if using post-processing: this.removePostProcessingEffect('mutation_distort');
 
         switch (level) {
             case 1:
                 if(gameUiElement) gameUiElement.classList.add('mutation-level-1'); else document.body.classList.add('mutation-level-1');
-                // Example: this.addPostProcessingEffect('mutation_distort_mild');
-                if (this.gameCore?.audioManager) this.gameCore.audioManager.playSound('mutation_level_1_start');
+                if (this.gameCore?.audioManager) this.gameCore.audioManager.playSound(SOUND_KEYS.MUTATION_LEVEL_1_START);
                 console.log("Player Mutation Level 1 activated.");
                 break;
             case 2:
                 if(gameUiElement) gameUiElement.classList.add('mutation-level-2'); else document.body.classList.add('mutation-level-2');
-                // Example: this.addPostProcessingEffect('mutation_distort_strong');
-                if (this.gameCore?.audioManager) this.gameCore.audioManager.playSound('mutation_level_2_start');
+                if (this.gameCore?.audioManager) this.gameCore.audioManager.playSound(SOUND_KEYS.MUTATION_LEVEL_2_START);
                 console.log("Player Mutation Level 2 activated. Hallucinations may occur.");
 
                 this.mutationEffectInterval = setInterval(() => {
                     if (this.currentMutationLevel === 2 && this.gameCore) {
-                        if(this.gameCore.audioManager) this.gameCore.audioManager.playSound('local_hallucination_whisper');
-                        this.addScreenFlash(Math.random() > 0.5 ? '#300330' : '#033003', 100, 0.2 + Math.random() * 0.1); // Quick dark flash, varied opacity
+                        if(this.gameCore.audioManager) this.gameCore.audioManager.playSound(SOUND_KEYS.LOCAL_HALLUCINATION_WHISPER);
+                        this.addScreenFlash(Math.random() > 0.5 ? '#300330' : '#033003', 100, 0.2 + Math.random() * 0.1);
                     } else if (this.currentMutationLevel < 2 && this.mutationEffectInterval) {
-                        clearInterval(this.mutationEffectInterval); // Stop if level drops below 2
+                        clearInterval(this.mutationEffectInterval);
                         this.mutationEffectInterval = null;
                     }
-                }, 8000 + Math.random() * 5000); // Random interval 8-13s
+                }, 8000 + Math.random() * 5000);
                 break;
             case 0:
             default:
-                // Effects already cleared above
-                if (this.gameCore?.audioManager) this.gameCore.audioManager.playSound('mutation_end');
+                if (this.gameCore?.audioManager) this.gameCore.audioManager.playSound(SOUND_KEYS.MUTATION_END);
                 console.log("Player Mutation effects ended.");
                 break;
         }
@@ -634,7 +629,7 @@ export class EffectsManager {
         this.addScreenFlash('#a0a0ff', 300); // Light blue/purple flash for 300ms.
 
         if (this.gameCore && this.gameCore.audioManager && typeof this.gameCore.audioManager.playSound === 'function') {
-            this.gameCore.audioManager.playSound('summon_echo_sound'); // Assumes this sound key exists
+            this.gameCore.audioManager.playSound(SOUND_KEYS.SUMMON_ECHO || 'summon_echo_sound');
         } else {
             console.warn("AudioManager or playSound method not available for summon_echo_sound.");
         }
@@ -677,8 +672,7 @@ export class EffectsManager {
         animateEffect();
 
         if (this.gameCore && this.gameCore.audioManager && typeof this.gameCore.audioManager.playSound === 'function') {
-            // Assuming playSound can handle positional audio if the AudioManager supports it
-            this.gameCore.audioManager.playSound('swap_effect_sound', position);
+            this.gameCore.audioManager.playSound(SOUND_KEYS.SWAP_EFFECT || 'swap_effect_sound', position);
         } else {
             console.warn("AudioManager or playSound method not available for swap_effect_sound.");
         }
@@ -688,10 +682,10 @@ export class EffectsManager {
         console.log("Gravity glitch effect triggered for duration:", duration);
 
         // Visual cue: Purple flash
-        this.addScreenFlash('#551A8B', 500); // Purple color, 500ms duration (opacity is fixed at 0.3 by addScreenFlash)
+        this.addScreenFlash('#551A8B', 500);
 
         if (this.gameCore && this.gameCore.audioManager && typeof this.gameCore.audioManager.playSound === 'function') {
-            this.gameCore.audioManager.playSound('gravity_glitch_start_sound'); // Assumes this sound key exists
+            this.gameCore.audioManager.playSound(SOUND_KEYS.GRAVITY_GLITCH_START || 'gravity_glitch_start_sound');
         } else {
             console.warn("AudioManager or playSound method not available for gravity_glitch_start_sound.");
         }

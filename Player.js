@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { WEAPON_CONFIG } from './WeaponManager.js'; // Import WEAPON_CONFIG
+import { PLAYER_CLASSES, WEAPON_TYPES, TEAM_IDS, PLAYER_EFFECT_TYPES } from './Constants.js'; // Added PLAYER_EFFECT_TYPES
 
 export class Player {
     constructor() {
@@ -10,9 +11,9 @@ export class Player {
         this.cameraYaw = 0;
         this.health = 100;
         this.isDead = false;
-        this.team = 'alpha';
+        this.team = TEAM_IDS.ALPHA;
         this.gameCore = null;
-        this.playerClass = 'assault';
+        this.playerClass = PLAYER_CLASSES.ASSAULT;
         this.lastDamageInfo = null;
 
         // State properties
@@ -92,15 +93,15 @@ export class Player {
 
     getWeaponForClass(playerClass) {
         switch (playerClass) {
-            case 'assault': return 'assault'; // Assuming weaponType strings match class names for now
-            case 'scout': return 'scout';   // Or specific weapon names like 'rifle', 'pistol'
-            case 'heavy': return 'heavy';   // Or 'shotgun'
-            default: return 'assault';
+            case PLAYER_CLASSES.ASSAULT: return WEAPON_TYPES.ASSAULT;
+            case PLAYER_CLASSES.SCOUT: return WEAPON_TYPES.SCOUT;
+            case PLAYER_CLASSES.HEAVY: return WEAPON_TYPES.HEAVY;
+            default: return WEAPON_TYPES.ASSAULT;
         }
     }
 
     getWeaponConfig() {
-        return WEAPON_CONFIG[this.weaponType] || WEAPON_CONFIG['assault']; // Fallback to assault
+        return WEAPON_CONFIG[this.weaponType] || WEAPON_CONFIG[WEAPON_TYPES.ASSAULT]; // Fallback to assault
     }
 
     resetAmmo() {
@@ -117,28 +118,28 @@ export class Player {
 
     setClass(playerClass) {
         this.playerClass = playerClass;
-        this.weaponType = this.getWeaponForClass(playerClass);
+        this.weaponType = this.getWeaponForClass(playerClass); // This now returns WEAPON_TYPES
 
         switch (playerClass) {
-            case 'assault':
+            case PLAYER_CLASSES.ASSAULT:
                 this.maxHealth = 100;
                 break;
-            case 'scout':
-                this.maxHealth = 80; // Scout might have less health
+            case PLAYER_CLASSES.SCOUT:
+                this.maxHealth = 80;
                 break;
-            case 'heavy':
+            case PLAYER_CLASSES.HEAVY:
                 this.maxHealth = 150;
                 break;
             default:
                 this.maxHealth = 100;
                 break;
         }
-        this.health = this.maxHealth; // Reset health on class change
-        this.resetAmmo(); // Reset ammo for the new class's weapon type
+        this.health = this.maxHealth;
+        this.resetAmmo();
 
-        if (this.gameCore?.uiManager) { // Update UI if gameCore and uiManager are available
+        if (this.gameCore?.uiManager) {
             this.gameCore.uiManager.updateHealthDisplay();
-            this.gameCore.uiManager.updateWeaponDisplay(this.weaponType); // If weapon display depends on type
+            this.gameCore.uiManager.updateWeaponDisplay(this.weaponType);
         }
         console.log(`Player class set to: ${this.playerClass}, Max Health: ${this.maxHealth}, Weapon: ${this.weaponType}`);
     }
@@ -148,46 +149,79 @@ export class Player {
     }
     
     // Renamed from updateMovement to reflect new responsibilities
-    updateStateAndMovement(deltaTime, inputControls, camera) {
+    updateStateAndMovement(deltaTime, inputControls, camera, justPressedActions = {}) {
         // deltaTime is expected in seconds from GameCore.gameLoop
 
         // -- STATE UPDATES --
         let presenceNeedsUpdate = false;
 
-        // Crouch (Toggle on press) - InputManager still uses event.location for Shift.
-        // We need a way to detect a fresh press for crouch toggle.
-        // Assuming inputControls.crouch becomes true on keydown and false on keyup.
-        // Player needs to track previous crouch input state to detect a fresh press.
-        if (inputControls.crouch && !this.prevCrouchPressed) {
+        // Crouch (Toggle on press)
+        if (justPressedActions.crouchToggleJustPressed) {
             this.isCrouching = !this.isCrouching;
             this.cameraOffsetY = this.isCrouching ? this.crouchCameraOffsetY : this.baseCameraOffsetY;
-            this.currentHeight = this.isCrouching ? this.crouchHeight : this.normalHeight; // Update collision height
+            this.currentHeight = this.isCrouching ? this.crouchHeight : this.normalHeight;
             presenceNeedsUpdate = true;
         }
-        this.prevCrouchPressed = inputControls.crouch;
+        // Note: this.prevCrouchPressed logic is now fully in InputManager for the flag.
+        // The 'held' state inputControls.crouch might still be useful if crouch can be held OR toggled.
+        // For a pure toggle, the justPressedAction is sufficient. If holding is also an option,
+        // then inputControls.crouch (set by InputManager based on keydown/keyup) would also be used.
+        // Current InputManager sets controls.crouch = true on keydown, so this is for "held" crouch.
+        // The justPressedActions.crouchToggleJustPressed is specifically for the toggle action.
+        // This might lead to a situation where toggle happens, and if key is held, crouch remains.
+        // For a strict toggle, inputControls.crouch might not be needed here for the crouch state itself.
+        // For now, let's assume the toggle is the primary way to enter/exit crouch.
 
 
         // Sprint (Hold)
-        const canSprint = !this.isCrouching && !this.isReloading;
+        const canSprint = !this.isCrouching && !this.isReloading; // isCrouching state is now toggled above
         const newSprintState = inputControls.sprint && canSprint;
         if (this.isSprinting !== newSprintState) {
             this.isSprinting = newSprintState;
             presenceNeedsUpdate = true;
         }
 
-        // Reload (Event-driven from GameCore.handleReload via InputManager)
-        // The actual initiation of reload is now in startReload()
-        if (this.isReloading) {
-            this.reloadTimer += deltaTime * 1000; // Convert deltaTime to ms for timer
+        // Reload (Triggered by "just pressed" action)
+        if (justPressedActions.reloadJustPressed) {
             const weaponConfig = this.getWeaponConfig();
-            if (this.reloadTimer >= weaponConfig.reloadTime) {
-                this.resetAmmo(); // Fills ammo to capacity
+            if (weaponConfig && !this.isReloading && this.ammo < weaponConfig.ammoCapacity) {
+                this.startReload(); // Call the existing startReload method
+                presenceNeedsUpdate = true; // startReload itself might also set this if it syncs presence
+            }
+        }
+
+        // Reload progress timer (if currently reloading)
+        if (this.isReloading) {
+            this.reloadTimer += deltaTime; // deltaTime is already in seconds
+            const weaponConfig = this.getWeaponConfig();
+            if (weaponConfig && this.reloadTimer >= (weaponConfig.reloadTime / 1000.0)) { // Convert reloadTime from ms
+                this.resetAmmo();
                 this.isReloading = false;
                 this.reloadTimer = 0;
-                if(this.gameCore.uiManager) this.gameCore.uiManager.updateAmmoDisplay(this.ammo, weaponConfig.ammoCapacity, this.isReloading);
+                if (this.gameCore && this.gameCore.uiManager) {
+                    this.gameCore.uiManager.updateAmmoDisplay();
+                }
+                // Presence update for reload completion will be part of the regular presence update cycle
                 presenceNeedsUpdate = true;
             }
         }
+
+        // Interaction (Triggered by "just pressed" action)
+        if (justPressedActions.interactJustPressed) {
+            // Option 1: Player directly handles some interactions
+            if (this.currentBoothId && this.gameCore && this.gameCore.uiManager && !this.gameCore.uiManager.isConfessionalInputVisible()) {
+                this.gameCore.uiManager.showConfessionalInput();
+            } else if (this.canCollectFragment) {
+                this.collectFragment(); // This already calls network updates
+            } else {
+                // Option 2: Or, signal GameCore to handle general interaction contextually
+                // This requires GameCore.handleInteraction to exist and do further checks.
+                if(this.gameCore && typeof this.gameCore.handleInteraction === 'function') {
+                    this.gameCore.handleInteraction();
+                }
+            }
+        }
+
 
         // -- MOVEMENT LOGIC (adapted from old updateMovement) --
         const moveVector = new THREE.Vector3();
@@ -329,11 +363,10 @@ export class Player {
     }
     
     getWeaponSpeedModifier() {
-        /* @tweakable weapon type speed modifiers */
         const weaponMods = {
-            assault: 1.0,
-            scout: 1.2,
-            heavy: 0.8
+            [WEAPON_TYPES.ASSAULT]: 1.0,
+            [WEAPON_TYPES.SCOUT]: 1.2,
+            [WEAPON_TYPES.HEAVY]: 0.8
         };
         return weaponMods[this.weaponType] || 1.0;
     }
@@ -347,19 +380,25 @@ export class Player {
         return this.baseWalkSpeed;
     }
     
-    setWeaponType(weaponType) {
-        if (['assault', 'scout', 'heavy'].includes(weaponType)) {
+    setWeaponType(weaponType) { // weaponType here should be one of WEAPON_TYPES
+        // Ensure weaponType is a valid one from WEAPON_TYPES
+        if (Object.values(WEAPON_TYPES).includes(weaponType)) {
             this.weaponType = weaponType;
             
-            // Update ammo based on weapon type
-            const weaponConfig = {
-                assault: { maxAmmo: 30 },
-                scout: { maxAmmo: 15 },
-                heavy: { maxAmmo: 8 }
-            };
-            
-            this.maxAmmo = weaponConfig[weaponType].maxAmmo;
-            this.ammo = this.maxAmmo;
+            const config = WEAPON_CONFIG[weaponType];
+            if (config) {
+                this.maxAmmo = config.ammoCapacity;
+                this.ammo = config.ammoCapacity;
+            } else { // Fallback if somehow config is not found for a valid WEAPON_TYPE
+                this.maxAmmo = 30; // Default
+                this.ammo = 30;
+                console.warn(`No WEAPON_CONFIG found for WEAPON_TYPE: ${weaponType}. Using default ammo.`);
+            }
+        } else {
+            console.warn(`Attempted to set invalid weaponType: ${weaponType}`);
+            // Optionally set to a default weaponType
+            // this.weaponType = WEAPON_TYPES.ASSAULT;
+            // this.resetAmmo();
         }
     }
     
@@ -493,24 +532,34 @@ export class Player {
         };
     }
 
-    // Called by GameCore when reload input is detected
+    // Called by this.updateStateAndMovement when reloadJustPressed is true
     startReload() {
+        // The checks for !this.isReloading and ammo < capacity are now done in updateStateAndMovement before calling this.
         const weaponConfig = this.getWeaponConfig();
-        if (!this.isReloading && this.ammo < weaponConfig.ammoCapacity && weaponConfig) {
-            this.isReloading = true;
-            this.reloadTimer = 0;
-            this.isSprinting = false; // Stop sprinting
+        if (!weaponConfig) return false; // Should not happen if checks are done prior
 
-            const reloadSound = weaponConfig.reloadSound || 'reload_default';
-            if(this.gameCore.audioManager) this.gameCore.audioManager.playSound(reloadSound, this.position);
-            if(this.gameCore.uiManager) this.gameCore.uiManager.updateAmmoDisplay(this.ammo, weaponConfig.ammoCapacity, this.isReloading);
-            if(this.gameCore.networkManager) this.gameCore.networkManager.updatePresence(this.getPresenceData());
-            return true;
+        this.isReloading = true;
+        this.reloadTimer = 0; // Reset timer
+        this.isSprinting = false; // Stop sprinting if starting reload
+
+        if (this.gameCore && this.gameCore.audioManager) {
+            this.gameCore.audioManager.playSound(weaponConfig.reloadSound || SOUND_KEYS.RELOAD_DEFAULT, this.position); // Use SOUND_KEYS
         }
-        return false;
+        if (this.gameCore && this.gameCore.uiManager) {
+            // Pass current ammo, capacity, and reloading state for more detailed UI update
+            this.gameCore.uiManager.updateAmmoDisplay(); // UIManager can fetch from player or pass explicitly
+        }
+        if (this.gameCore && this.gameCore.networkManager && this.isLocalPlayer()) { // Assuming isLocalPlayer method or similar check
+            this.gameCore.networkManager.updatePresence(this.getPresenceData());
+        }
+        return true; // Indicates reload process has started
     }
     
-    // Old reload method, logic moved to startReload and updateStateAndMovement timer
+    isLocalPlayer() { // Helper method, can be more robust
+        return this.gameCore && this.gameCore.networkManager && this.getPlayerId() === this.gameCore.networkManager.getPlayerId();
+    }
+
+    // Old reload method is now fully replaced by startReload and the timer logic in updateStateAndMovement
     // reload() {
     //     if (this.ammo >= this.maxAmmo) return false;
     //
